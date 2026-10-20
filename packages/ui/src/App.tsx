@@ -7167,20 +7167,6 @@ function useTmdbPresencePoster(
         onClose={() => setShowControllerSearch(false)}
       />
 
-      {/* Sports: probe and rank the channels a Sports click searched for */}
-      {activeView === 'guide' &&
-        sportsSearchOrigin !== null &&
-        searchQuery === sportsSearchOrigin &&
-        searchChannels.length > 0 &&
-        sportsRankChannels === null && (
-          <button
-            type="button"
-            className="spr-launch"
-            onClick={() => setSportsRankChannels([...searchChannels])}
-          >
-            {i18n.t('probe:rankButton')}
-          </button>
-        )}
       <SportsProbeRankModal
         isOpen={sportsRankChannels !== null}
         query={sportsSearchOrigin ?? ''}
@@ -7336,6 +7322,14 @@ function useTmdbPresencePoster(
         isSearchMode={isSearchMode}
         searchQuery={debouncedSearchQuery}
         searchChannels={searchChannels}
+        onProbeRank={
+          sportsSearchOrigin !== null &&
+          debouncedSearchQuery === sportsSearchOrigin &&
+          searchChannels.length > 0 &&
+          sportsRankChannels === null
+            ? () => setSportsRankChannels([...searchChannels])
+            : undefined
+        }
         searchPrograms={searchPrograms}
         searchScope={advancedSearchConfig.scope}
         isWatchlistMode={isWatchlistMode}

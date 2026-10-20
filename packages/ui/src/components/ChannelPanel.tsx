@@ -333,6 +333,7 @@ interface ChannelPanelProps {
   isSearchMode?: boolean;
   searchQuery?: string;
   searchChannels?: StoredChannel[];
+  onProbeRank?: () => void;
   searchPrograms?: StoredProgram[];
   searchScope?: 'channels' | 'epg' | 'both';
   isWatchlistMode?: boolean;
@@ -444,6 +445,7 @@ export function ChannelPanel({
   isSearchMode,
   searchQuery,
   searchChannels,
+  onProbeRank,
   searchPrograms,
   searchScope = 'both',
   isWatchlistMode,
@@ -4370,6 +4372,13 @@ export function ChannelPanel({
                         />
                       )}
                     </div>
+                    {onProbeRank && (
+                      <div className="search-probe-footer">
+                        <button type="button" className="search-probe-btn" onClick={onProbeRank}>
+                          {i18n.t('probe:rankButton')}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="guide-empty">

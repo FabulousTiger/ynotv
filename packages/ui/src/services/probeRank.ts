@@ -94,3 +94,49 @@ export function rankResults(results: ProbeChannelResult[]): RankedGroups {
   groups.dead.sort(compareRank);
   return groups;
 }
+
+export type ResolutionClass = '4k' | '1080' | '720' | 'sd';
+export type ScaleClass = 'good' | 'mid' | 'low';
+
+/** Colour bucket for a stream height. */
+export function resolutionClass(height: number): ResolutionClass {
+  if (height >= 2160) return '4k';
+  if (height >= 1080) return '1080';
+  if (height >= 720) return '720';
+  return 'sd';
+}
+
+/** Short badge label for a stream height. */
+export function resolutionLabel(height: number): string {
+  const cls = resolutionClass(height);
+  if (cls === '4k') return '4K';
+  if (cls === 'sd') return 'SD';
+  return `${cls}p`;
+}
+
+export function fpsClass(fps: number): ScaleClass {
+  if (fps >= 50) return 'good';
+  if (fps > LOW_FPS_MAX) return 'mid';
+  return 'low';
+}
+
+export function bitrateClass(kbps: number): ScaleClass {
+  if (kbps >= 4000) return 'good';
+  if (kbps >= 1500) return 'mid';
+  return 'low';
+}
+
+/** Remaining seconds, extrapolated from the average time per finished probe. */
+export function estimateRemainingSeconds(elapsedSec: number, done: number, total: number): number | null {
+  if (done <= 0 || done >= total || elapsedSec <= 0) return null;
+  return Math.round((elapsedSec / done) * (total - done));
+}
+
+/** m:ss, or h:mm:ss from an hour up. */
+export function formatDuration(totalSec: number): string {
+  const s = Math.max(0, Math.round(totalSec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = String(s % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+}

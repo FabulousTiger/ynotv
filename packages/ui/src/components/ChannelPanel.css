@@ -1901,12 +1901,39 @@ html.epg-disable-channel-fade .guide-channels {
 .search-channels-section {
   height: 100%;
   margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Timeline wrapper for channel search matches (anchors the now-indicator) */
 .search-channels-timeline {
   position: relative;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Sports Probe & rank launcher pinned under the matched channels */
+.search-probe-footer {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  padding: 8px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.search-probe-btn {
+  background: var(--accent, #3b82f6);
+  border: none;
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 20px;
+}
+
+.search-probe-btn:hover {
+  filter: brightness(1.1);
 }
 
 /* EPG card tabs - keep the card padding around the virtualized list */

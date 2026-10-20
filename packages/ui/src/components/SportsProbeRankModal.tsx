@@ -2,7 +2,18 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { StoredChannel } from '../db';
 import { quickProbeChannel, type ProbeChannelResult } from '../services/stream-probe';
-import { rankResults, classifyTier, effectiveVideoBitrate, type RankTier } from '../services/probeRank';
+import {
+  rankResults,
+  classifyTier,
+  effectiveVideoBitrate,
+  resolutionClass,
+  resolutionLabel,
+  fpsClass,
+  bitrateClass,
+  estimateRemainingSeconds,
+  formatDuration,
+  type RankTier,
+} from '../services/probeRank';
 import './SportsProbeRankModal.css';
 
 export interface SportsProbeRankModalProps {
@@ -23,15 +34,11 @@ function pendingStub(channel: StoredChannel): ProbeChannelResult {
   };
 }
 
-function describeStream(r: ProbeChannelResult): string {
-  const parts: string[] = [];
-  if (r.height) parts.push(`${r.height}p`);
-  if (r.fps) parts.push(`${Math.round(r.fps)}fps`);
-  const bitrate = effectiveVideoBitrate(r);
-  if (bitrate) parts.push(bitrate >= 1000 ? `${(bitrate / 1000).toFixed(1)} Mbps` : `${Math.round(bitrate)} kbps`);
-  if (r.video_codec) parts.push(r.video_codec);
-  return parts.join(' · ');
+function formatBitrate(kbps: number): string {
+  return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${Math.round(kbps)} kbps`;
 }
+
+type SectionKind = 'ranked' | 'low' | 'dead' | 'pending';
 
 export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayChannel }: SportsProbeRankModalProps) {
   const { t } = useTranslation('probe');
@@ -39,20 +46,42 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
   const [running, setRunning] = useState(false);
   const [hideLow, setHideLow] = useState(false);
   const [hideDead, setHideDead] = useState(false);
+  const [probingIds, setProbingIds] = useState<Record<string, true>>({});
+  const [currentName, setCurrentName] = useState('');
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [endedAt, setEndedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const runIdRef = useRef(0);
 
   // Fresh state whenever the dialog opens or closes; also abandons any run
   useEffect(() => {
     runIdRef.current += 1;
     setResults({});
+    setProbingIds({});
+    setCurrentName('');
+    setStartedAt(null);
+    setEndedAt(null);
     setRunning(false);
   }, [isOpen]);
+
+  // Live clock for elapsed time and ETA while a run is active
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
 
   const handleStart = useCallback(async () => {
     if (running || channels.length === 0) return;
     runIdRef.current += 1;
     const runId = runIdRef.current;
+    const begun = Date.now();
     setResults({});
+    setProbingIds({});
+    setCurrentName('');
+    setStartedAt(begun);
+    setNow(begun);
+    setEndedAt(null);
     setRunning(true);
 
     // One queue per source: a source is probed strictly one stream at a time,
@@ -67,6 +96,8 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     const runQueue = async (queue: StoredChannel[]) => {
       for (const channel of queue) {
         if (runIdRef.current !== runId) return;
+        setProbingIds((prev) => ({ ...prev, [channel.stream_id]: true }));
+        setCurrentName(channel.name);
         let result: ProbeChannelResult;
         try {
           result = await quickProbeChannel(channel);
@@ -79,19 +110,30 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
         }
         if (runIdRef.current !== runId) return;
         setResults((prev) => ({ ...prev, [channel.stream_id]: result }));
+        setProbingIds((prev) => {
+          const next = { ...prev };
+          delete next[channel.stream_id];
+          return next;
+        });
       }
     };
 
     try {
       await Promise.all(Array.from(bySource.values()).map(runQueue));
     } finally {
-      if (runIdRef.current === runId) setRunning(false);
+      if (runIdRef.current === runId) {
+        setRunning(false);
+        setProbingIds({});
+        setEndedAt(Date.now());
+      }
     }
   }, [running, channels]);
 
   const handleStop = useCallback(() => {
     runIdRef.current += 1;
     setRunning(false);
+    setProbingIds({});
+    setEndedAt(Date.now());
   }, []);
 
   const handleClose = useCallback(() => {
@@ -106,12 +148,31 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     return map;
   }, [channels]);
 
+  // Recomputed on every completed probe, so ranked results re-sort live
   const groups = useMemo(
-    () => rankResults(channels.map((channel) => results[channel.stream_id] ?? pendingStub(channel))),
-    [channels, results]
+    () =>
+      rankResults(
+        channels.map((channel): ProbeChannelResult => {
+          const done = results[channel.stream_id];
+          if (done) return done;
+          const stub = pendingStub(channel);
+          return probingIds[channel.stream_id] ? { ...stub, status: 'probing' } : stub;
+        })
+      ),
+    [channels, results, probingIds]
+  );
+
+  // Channels being probed right now go first in the not-probed list
+  const pendingSorted = useMemo(
+    () => [...groups.pending].sort((a, b) => Number(b.status === 'probing') - Number(a.status === 'probing')),
+    [groups.pending]
   );
 
   const doneCount = Object.keys(results).length;
+  const total = channels.length;
+  const elapsedSec = startedAt === null ? 0 : ((endedAt ?? now) - startedAt) / 1000;
+  const etaSec = running ? estimateRemainingSeconds(elapsedSec, doneCount, total) : null;
+  const percent = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
   const tierLabel = (tier: RankTier): string => {
     if (tier === 'direct') return t('rankTierDirect');
@@ -121,15 +182,39 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
 
   const renderRow = (r: ProbeChannelResult) => {
     const channel = channelById.get(r.stream_id);
-    const showTier = r.status === 'alive';
+    const alive = r.status === 'alive';
+    const probing = r.status === 'probing';
     const tier = classifyTier(r);
+    const bitrate = effectiveVideoBitrate(r);
     return (
-      <div className="spr-row" key={r.stream_id}>
+      <div className={`spr-row${probing ? ' spr-row-probing' : ''}`} key={r.stream_id}>
+        {probing && <span className="spr-spinner" aria-hidden="true" />}
         <div className="spr-row-main">
           <div className="spr-row-name">{r.name}</div>
-          <div className="spr-row-info">{r.status === 'alive' ? describeStream(r) : r.error_reason || r.status}</div>
+          <div className="spr-row-info">
+            {alive ? (
+              <>
+                {r.height ? (
+                  <span className={`spr-chip spr-res spr-res-${resolutionClass(r.height)}`}>{resolutionLabel(r.height)}</span>
+                ) : null}
+                {r.fps ? (
+                  <span className={`spr-chip spr-scale spr-scale-${fpsClass(r.fps)}`}>{Math.round(r.fps)} fps</span>
+                ) : null}
+                {bitrate ? (
+                  <span className={`spr-chip spr-scale spr-scale-${bitrateClass(bitrate)}`} title={t('rankBadgeBitrate')}>
+                    {formatBitrate(bitrate)}
+                  </span>
+                ) : null}
+                {r.video_codec ? <span className="spr-chip spr-codec">{r.video_codec}</span> : null}
+              </>
+            ) : probing ? (
+              t('rankProbingRow')
+            ) : (
+              r.error_reason || r.status
+            )}
+          </div>
         </div>
-        {showTier && (
+        {alive && (
           <span className={`spr-tier spr-tier-${tier}`} title={t('rankTierHint')}>
             {tierLabel(tier)}
           </span>
@@ -143,12 +228,13 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     );
   };
 
-  const renderSection = (title: string, list: ProbeChannelResult[]) => {
+  const renderSection = (kind: SectionKind, title: string, list: ProbeChannelResult[]) => {
     if (list.length === 0) return null;
     return (
-      <div className="spr-section" key={title}>
+      <div className={`spr-section spr-section-${kind}`} key={kind}>
         <div className="spr-section-title">
-          {title} ({list.length})
+          <span>{title}</span>
+          <span className="spr-count">{list.length}</span>
         </div>
         {list.map(renderRow)}
       </div>
@@ -169,7 +255,7 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
         <div className="spr-header">
           <div>
             <div className="spr-title">{t('rankTitle', { query })}</div>
-            <div className="spr-subtitle">{t('rankSubtitle', { count: channels.length })}</div>
+            <div className="spr-subtitle">{t('rankSubtitle', { count: total })}</div>
           </div>
           <button type="button" className="spr-close" onClick={handleClose} aria-label={t('close')}>
             ✕
@@ -182,17 +268,10 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
               {t('rankStop')}
             </button>
           ) : (
-            <button type="button" className="spr-btn spr-btn-primary" onClick={handleStart} disabled={channels.length === 0}>
+            <button type="button" className="spr-btn spr-btn-primary" onClick={handleStart} disabled={total === 0}>
               {t('rankStart')}
             </button>
           )}
-          <span className="spr-progress">
-            {running
-              ? t('rankProgress', { done: doneCount, total: channels.length })
-              : doneCount > 0
-                ? t('rankDone', { done: doneCount, total: channels.length })
-                : ''}
-          </span>
           <label className="spr-toggle">
             <input type="checkbox" checked={hideLow} onChange={(e) => setHideLow(e.target.checked)} />
             {t('rankHideLow')}
@@ -203,11 +282,30 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
           </label>
         </div>
 
+        {(running || doneCount > 0) && (
+          <div className="spr-progress-block">
+            <div className="spr-bar" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={doneCount}>
+              <div className={`spr-bar-fill${running ? ' spr-bar-active' : ''}`} style={{ width: `${percent}%` }} />
+            </div>
+            <div className="spr-progress-text">
+              <span className="spr-progress-main">
+                {running
+                  ? t('rankProgressNow', { current: Math.min(doneCount + 1, total), total, name: currentName })
+                  : t('rankDone', { done: doneCount, total })}
+              </span>
+              <span className="spr-progress-time">
+                {t('rankElapsed', { time: formatDuration(elapsedSec) })}
+                {etaSec !== null && ` · ${t('rankEta', { time: formatDuration(etaSec) })}`}
+              </span>
+            </div>
+          </div>
+        )}
+
         <div className="spr-body">
-          {renderSection(t('rankSectionRanked'), groups.ranked)}
-          {renderSection(t('rankSectionPending'), groups.pending)}
-          {!hideLow && renderSection(t('rankSectionLow'), groups.low)}
-          {!hideDead && renderSection(t('rankSectionDead'), groups.dead)}
+          {renderSection('ranked', t('rankSectionRanked'), groups.ranked)}
+          {!hideLow && renderSection('low', t('rankSectionLow'), groups.low)}
+          {!hideDead && renderSection('dead', t('rankSectionDead'), groups.dead)}
+          {renderSection('pending', t('rankSectionPending'), pendingSorted)}
           {nothingVisible && <div className="spr-empty">{t('rankEmpty')}</div>}
         </div>
       </div>

@@ -6,7 +6,18 @@
  * streams always come last.
  */
 import { describe, it, expect } from 'vitest';
-import { rankResults, classifyTier, isLowQuality, type RankedGroups } from '../probeRank';
+import {
+  rankResults,
+  classifyTier,
+  isLowQuality,
+  resolutionClass,
+  resolutionLabel,
+  fpsClass,
+  bitrateClass,
+  estimateRemainingSeconds,
+  formatDuration,
+  type RankedGroups,
+} from '../probeRank';
 import type { ProbeChannelResult } from '../stream-probe';
 
 function make(id: string, over: Partial<ProbeChannelResult> = {}): ProbeChannelResult {
@@ -83,5 +94,38 @@ describe('classifyTier', () => {
 
   it('is unknown without enough data', () => {
     expect(classifyTier(make('h', { height: 1080 }))).toBe('unknown');
+  });
+});
+
+describe('display helpers', () => {
+  it('buckets resolution and labels it', () => {
+    expect(resolutionClass(2160)).toBe('4k');
+    expect(resolutionClass(1080)).toBe('1080');
+    expect(resolutionClass(720)).toBe('720');
+    expect(resolutionClass(576)).toBe('sd');
+    expect(resolutionLabel(2160)).toBe('4K');
+    expect(resolutionLabel(1080)).toBe('1080p');
+    expect(resolutionLabel(480)).toBe('SD');
+  });
+
+  it('scales fps and bitrate', () => {
+    expect(fpsClass(60)).toBe('good');
+    expect(fpsClass(50)).toBe('good');
+    expect(fpsClass(35)).toBe('mid');
+    expect(fpsClass(25)).toBe('low');
+    expect(bitrateClass(6000)).toBe('good');
+    expect(bitrateClass(2000)).toBe('mid');
+    expect(bitrateClass(300)).toBe('low');
+  });
+
+  it('estimates remaining time from the average per probe', () => {
+    expect(estimateRemainingSeconds(30, 0, 10)).toBeNull();
+    expect(estimateRemainingSeconds(30, 10, 10)).toBeNull();
+    expect(estimateRemainingSeconds(30, 5, 15)).toBe(60);
+  });
+
+  it('formats durations', () => {
+    expect(formatDuration(65)).toBe('1:05');
+    expect(formatDuration(3725)).toBe('1:02:05');
   });
 });

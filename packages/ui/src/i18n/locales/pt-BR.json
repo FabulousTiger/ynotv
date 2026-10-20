@@ -5347,6 +5347,11 @@
     "rankTierUnknown": "Unknown",
     "rankTierHint": "Best guess from the channel name and bitrate for the resolution. Not authoritative.",
     "rankEmpty": "Nothing to show with the current filters.",
-    "rankPlay": "Play"
+    "rankPlay": "Play",
+    "rankProgressNow": "Probing {{current}} of {{total}} · {{name}}",
+    "rankElapsed": "Elapsed {{time}}",
+    "rankEta": "~{{time}} left",
+    "rankProbingRow": "Probing…",
+    "rankBadgeBitrate": "Video bitrate"
   }
 }
