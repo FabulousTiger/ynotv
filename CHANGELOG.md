@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Probe & rank for Sports channel searches** - After clicking a broadcast channel on a game in Sports, a `Probe & rank` button appears over the matched channels. It probes only those channels (one at a time per source, different sources side by side) with the existing stream probe and lists them by resolution, then frame rate, then bitrate. Streams at 30 fps or below, or under 100 kbps of video, move to a `Low quality` section (hideable with `Hide low quality`); dead streams come last (hideable). Each stream gets a best-guess `Direct` or `Likely restream` badge, a heuristic based on RAW/4K/UHD in the name and bitrate for the resolution, so treat it as a hint.
+
 ## v2.5.7
 
 ### Added

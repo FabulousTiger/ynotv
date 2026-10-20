@@ -40,6 +40,7 @@ import { MoviesPage } from './components/MoviesPage';
 import { SeriesPage } from './components/SeriesPage';
 import { DvrDashboard } from './components/DvrDashboard';
 import { SportsHub, SportsMultiviewOverlay } from './components/sports/SportsHub';
+import { SportsProbeRankModal } from './components/SportsProbeRankModal';
 import { TVCalendarPage } from './components/TVCalendarPage';
 import { LiveSportsOverlay } from './components/LiveSportsOverlay';
 import { SportsLiveGameSidebar } from './components/sports/SportsLiveGameSidebar';
@@ -3327,6 +3328,10 @@ function useTmdbPresencePoster(
 
   // Channel Probe / IPTV Checker State
   const [showChannelProbeModal, setShowChannelProbeModal] = useState<boolean>(false);
+  // Query that a Sports channel click pushed into the guide search, and the
+  // snapshot of matches handed to the Probe & rank dialog
+  const [sportsSearchOrigin, setSportsSearchOrigin] = useState<string | null>(null);
+  const [sportsRankChannels, setSportsRankChannels] = useState<StoredChannel[] | null>(null);
   const [channelProbeInitialSourceId, setChannelProbeInitialSourceId] = useState<string | null>(null);
   const [channelProbeInitialCategoryId, setChannelProbeInitialCategoryId] = useState<string | null>(null);
   const [channelProbeInitialChannels, setChannelProbeInitialChannels] = useState<StoredChannel[] | undefined>(undefined);
@@ -7162,6 +7167,28 @@ function useTmdbPresencePoster(
         onClose={() => setShowControllerSearch(false)}
       />
 
+      {/* Sports: probe and rank the channels a Sports click searched for */}
+      {activeView === 'guide' &&
+        sportsSearchOrigin !== null &&
+        searchQuery === sportsSearchOrigin &&
+        searchChannels.length > 0 &&
+        sportsRankChannels === null && (
+          <button
+            type="button"
+            className="spr-launch"
+            onClick={() => setSportsRankChannels([...searchChannels])}
+          >
+            {i18n.t('probe:rankButton')}
+          </button>
+        )}
+      <SportsProbeRankModal
+        isOpen={sportsRankChannels !== null}
+        query={sportsSearchOrigin ?? ''}
+        channels={sportsRankChannels ?? []}
+        onPlayChannel={handlePlayChannelWrapper}
+        onClose={() => setSportsRankChannels(null)}
+      />
+
       {/* Channel Stream Probe / IPTV Checker Modal */}
       <ChannelProbeModal
         isOpen={showChannelProbeModal}
@@ -7576,6 +7603,7 @@ function useTmdbPresencePoster(
           onClose={() => setActiveView('none')}
           onSearchChannels={(query) => {
             setSearchQuery(query);
+            setSportsSearchOrigin(query);
             setActiveView('guide');
             revealCategoriesForSearch();
             setTimeout(() => {

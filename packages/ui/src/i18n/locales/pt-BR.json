@@ -5328,6 +5328,25 @@
     "uaNoStatus": "sem status",
     "uaRowSource": "User-agent da origem",
     "uaRowNone": "Sem user-agent",
-    "uaRowBrowser": "User-agent do navegador"
+    "uaRowBrowser": "User-agent do navegador",
+    "rankButton": "Probe & rank",
+    "rankTitle": "Probe & rank: {{query}}",
+    "rankSubtitle": "Probes only the {{count}} matched channels, one at a time per source, and sorts them by resolution, frame rate and bitrate.",
+    "rankStart": "Start probing",
+    "rankStop": "Stop",
+    "rankProgress": "Probing {{done}} / {{total}}",
+    "rankDone": "Done: {{done}} / {{total}} probed",
+    "rankHideLow": "Hide low quality",
+    "rankHideDead": "Hide dead streams",
+    "rankSectionRanked": "Ranked",
+    "rankSectionLow": "Low quality",
+    "rankSectionPending": "Not probed yet",
+    "rankSectionDead": "Dead",
+    "rankTierDirect": "Direct",
+    "rankTierRestream": "Likely restream",
+    "rankTierUnknown": "Unknown",
+    "rankTierHint": "Best guess from the channel name and bitrate for the resolution. Not authoritative.",
+    "rankEmpty": "Nothing to show with the current filters.",
+    "rankPlay": "Play"
   }
 }

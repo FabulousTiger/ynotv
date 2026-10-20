@@ -1,0 +1,172 @@
+/* Sports "Probe & rank" dialog */
+
+.spr-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--glass-overlay-bg, rgba(0, 0, 0, 0.78));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10250;
+  padding: 24px;
+}
+
+.spr-modal {
+  box-sizing: border-box;
+  background: var(--bg-secondary, #141721);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  color: var(--text-primary, #f1f5f9);
+  width: 100%;
+  max-width: 760px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.spr-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 20px 8px;
+}
+
+.spr-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.spr-subtitle {
+  font-size: 12px;
+  opacity: 0.65;
+  margin-top: 4px;
+}
+
+.spr-close {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+.spr-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 20px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.spr-btn,
+.spr-play {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: inherit;
+  cursor: pointer;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.spr-btn-primary {
+  background: var(--accent, #3b82f6);
+  border-color: transparent;
+}
+
+.spr-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.spr-progress {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.spr-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.spr-body {
+  overflow-y: auto;
+  padding: 8px 20px 16px;
+}
+
+.spr-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  opacity: 0.6;
+  margin: 12px 0 6px;
+}
+
+.spr-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.spr-row-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.spr-row-name {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spr-row-info {
+  font-size: 11px;
+  opacity: 0.65;
+}
+
+.spr-tier {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.spr-tier-direct {
+  background: rgba(34, 197, 94, 0.22);
+}
+
+.spr-tier-restream {
+  background: rgba(245, 158, 11, 0.22);
+}
+
+.spr-empty {
+  text-align: center;
+  font-size: 12px;
+  opacity: 0.6;
+  padding: 24px 0;
+}
+
+.spr-launch {
+  position: fixed;
+  top: 52px;
+  right: 24px;
+  z-index: 10200;
+  background: var(--accent, #3b82f6);
+  border: none;
+  border-radius: 999px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 7px 16px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
