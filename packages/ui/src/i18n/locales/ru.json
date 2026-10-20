@@ -3345,6 +3345,7 @@
     "saveToRootOpt": "Сохранить напрямую в папку Сериалы",
     "saveToRootSub": "Сохранить все серии напрямую без создания подпапок.",
     "pathPreview": "Предпросмотр пути",
+    "downloadDestination": "Destination",
     "startDownload": "Начать загрузку",
     "singleSeasonSummary": "Сезон {{season}} • {{count}} серий",
     "allSeasonsSummary": "{{seasonCount}} сезонов • {{count}} серий",
@@ -5336,10 +5337,8 @@
     "rankStop": "Stop",
     "rankProgress": "Probing {{done}} / {{total}}",
     "rankDone": "Done: {{done}} / {{total}} probed",
-    "rankHideLow": "Hide low quality",
     "rankHideDead": "Hide dead streams",
     "rankSectionRanked": "Ranked",
-    "rankSectionLow": "Low quality",
     "rankSectionPending": "Not probed yet",
     "rankSectionDead": "Dead",
     "rankTierDirect": "Direct",
@@ -5352,6 +5351,12 @@
     "rankElapsed": "Elapsed {{time}}",
     "rankEta": "~{{time}} left",
     "rankProbingRow": "Probing…",
-    "rankBadgeBitrate": "Video bitrate"
+    "rankBadgeBitrate": "Video bitrate",
+    "rankNoSignal": "No signal",
+    "rankReprobe": "Re-probe",
+    "rankClearCache": "Clear cache",
+    "rankExportLog": "Export probe log (JSON)",
+    "rankAgeJustNow": "just now",
+    "rankAgeMinutes": "{{minutes}} min ago"
   }
 }

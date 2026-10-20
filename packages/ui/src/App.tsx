@@ -41,6 +41,9 @@ import { SeriesPage } from './components/SeriesPage';
 import { DvrDashboard } from './components/DvrDashboard';
 import { SportsHub, SportsMultiviewOverlay } from './components/sports/SportsHub';
 import { SportsProbeRankModal } from './components/SportsProbeRankModal';
+import { useProbeCacheStore } from './stores/probeCacheStore';
+import { cachedResultFor } from './services/probeCache';
+import { sortByProbe } from './services/probeRank';
 import { TVCalendarPage } from './components/TVCalendarPage';
 import { LiveSportsOverlay } from './components/LiveSportsOverlay';
 import { SportsLiveGameSidebar } from './components/sports/SportsLiveGameSidebar';
@@ -3410,13 +3413,19 @@ function useTmdbPresencePoster(
   // ==========================================================================
   // Search Results
   // ==========================================================================
-  const searchChannels = useChannelSearch(
+  const rawSearchChannels = useChannelSearch(
     debouncedSearchQuery,
     maxSearchResults,
     includeSourceInSearch,
     searchResultsOrder,
     activeSearchSourceIds,
     activeSearchCategoryIds
+  );
+  const probeCacheEntries = useProbeCacheStore((s) => s.entries);
+  // Dead / no-signal streams last, unprobed in the middle (sort only)
+  const searchChannels = useMemo(
+    () => sortByProbe(rawSearchChannels, (ch) => cachedResultFor(probeCacheEntries, ch, Date.now())),
+    [rawSearchChannels, probeCacheEntries]
   );
   const searchPrograms = useProgramSearch(
     debouncedSearchQuery,

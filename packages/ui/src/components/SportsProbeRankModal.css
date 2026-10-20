@@ -269,3 +269,9 @@
   opacity: 0.6;
   padding: 24px 0;
 }
+
+.spr-age {
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0.6;
+}

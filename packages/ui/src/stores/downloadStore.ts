@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import i18n, { translateNativeError } from '../i18n';
 import { useSettingsStore } from './settingsStore';
+import { capComponent } from '../services/downloadNaming';
 
 export interface DownloadItem {
   id: string;
@@ -141,7 +142,7 @@ export const useDownloadStore = create<DownloadState>()(
 
             const isHls = url.includes('.m3u8') || url.includes('/mono.m3u8');
             const ext = isHls ? 'mkv' : 'mp4';
-            const sanitizedTitle = title.replace(/[<>:"/\\|?*]/g, '_').substring(0, 50);
+            const sanitizedTitle = capComponent(title.replace(/[<>:"/\\|?*]/g, '_'));
 
             if (downloadsPath) {
               const separator = downloadsPath.includes('\\') ? '\\' : '/';

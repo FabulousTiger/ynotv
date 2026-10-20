@@ -12,8 +12,11 @@ import {
   bitrateClass,
   estimateRemainingSeconds,
   formatDuration,
+  isNoSignal,
   type RankTier,
 } from '../services/probeRank';
+import { ageMinutes, cacheKey, isFresh } from '../services/probeCache';
+import { useProbeCacheStore } from '../stores/probeCacheStore';
 import './SportsProbeRankModal.css';
 
 export interface SportsProbeRankModalProps {
@@ -38,13 +41,12 @@ function formatBitrate(kbps: number): string {
   return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${Math.round(kbps)} kbps`;
 }
 
-type SectionKind = 'ranked' | 'low' | 'dead' | 'pending';
+type SectionKind = 'ranked' | 'dead' | 'pending';
 
 export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayChannel }: SportsProbeRankModalProps) {
   const { t } = useTranslation('probe');
   const [results, setResults] = useState<Record<string, ProbeChannelResult>>({});
   const [running, setRunning] = useState(false);
-  const [hideLow, setHideLow] = useState(false);
   const [hideDead, setHideDead] = useState(false);
   const [probingIds, setProbingIds] = useState<Record<string, true>>({});
   const [currentName, setCurrentName] = useState('');
@@ -52,6 +54,9 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
   const [endedAt, setEndedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const runIdRef = useRef(0);
+  const cacheEntries = useProbeCacheStore((s) => s.entries);
+  const recordProbe = useProbeCacheStore((s) => s.record);
+  const clearProbeCache = useProbeCacheStore((s) => s.clearCache);
 
   // Fresh state whenever the dialog opens or closes; also abandons any run
   useEffect(() => {
@@ -71,6 +76,33 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     return () => window.clearInterval(timer);
   }, [running]);
 
+  // Probe one channel, store the result in the cache and show it
+  const probeOne = useCallback(
+    async (channel: StoredChannel, runId: number) => {
+      setProbingIds((prev) => ({ ...prev, [channel.stream_id]: true }));
+      setCurrentName(channel.name);
+      let result: ProbeChannelResult;
+      try {
+        result = await quickProbeChannel(channel);
+      } catch (err) {
+        result = {
+          ...pendingStub(channel),
+          status: 'dead',
+          error_reason: err instanceof Error ? err.message : String(err),
+        };
+      }
+      recordProbe(result, channel.source_name);
+      if (runIdRef.current !== runId) return;
+      setResults((prev) => ({ ...prev, [channel.stream_id]: result }));
+      setProbingIds((prev) => {
+        const next = { ...prev };
+        delete next[channel.stream_id];
+        return next;
+      });
+    },
+    [recordProbe]
+  );
+
   const handleStart = useCallback(async () => {
     if (running || channels.length === 0) return;
     runIdRef.current += 1;
@@ -85,9 +117,12 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     setRunning(true);
 
     // One queue per source: a source is probed strictly one stream at a time,
-    // different sources run side by side.
+    // different sources run side by side. Fresh cached results are not probed.
+    const cached = useProbeCacheStore.getState().entries;
     const bySource = new Map<string, StoredChannel[]>();
     for (const channel of channels) {
+      const entry = cached[cacheKey(channel.source_id, channel.stream_id)];
+      if (entry && isFresh(entry, begun)) continue;
       const list = bySource.get(channel.source_id) ?? [];
       list.push(channel);
       bySource.set(channel.source_id, list);
@@ -96,25 +131,7 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     const runQueue = async (queue: StoredChannel[]) => {
       for (const channel of queue) {
         if (runIdRef.current !== runId) return;
-        setProbingIds((prev) => ({ ...prev, [channel.stream_id]: true }));
-        setCurrentName(channel.name);
-        let result: ProbeChannelResult;
-        try {
-          result = await quickProbeChannel(channel);
-        } catch (err) {
-          result = {
-            ...pendingStub(channel),
-            status: 'dead',
-            error_reason: err instanceof Error ? err.message : String(err),
-          };
-        }
-        if (runIdRef.current !== runId) return;
-        setResults((prev) => ({ ...prev, [channel.stream_id]: result }));
-        setProbingIds((prev) => {
-          const next = { ...prev };
-          delete next[channel.stream_id];
-          return next;
-        });
+        await probeOne(channel, runId);
       }
     };
 
@@ -127,7 +144,35 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
         setEndedAt(Date.now());
       }
     }
-  }, [running, channels]);
+  }, [running, channels, probeOne]);
+
+  const handleReprobe = useCallback(
+    (channel: StoredChannel) => {
+      void probeOne(channel, runIdRef.current);
+    },
+    [probeOne]
+  );
+
+  const handleClearCache = useCallback(() => {
+    clearProbeCache();
+    setResults({});
+  }, [clearProbeCache]);
+
+  const handleExportLog = useCallback(() => {
+    const log = useProbeCacheStore.getState().log;
+    const blob = new Blob([JSON.stringify(log, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = 'ynotv-probe-log.json';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 300);
+  }, []);
 
   const handleStop = useCallback(() => {
     runIdRef.current += 1;
@@ -148,18 +193,33 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     return map;
   }, [channels]);
 
+  // This session's results win; otherwise a fresh cached result is shown
+  const effective = useMemo(() => {
+    const at = Date.now();
+    const map: Record<string, ProbeChannelResult> = {};
+    for (const channel of channels) {
+      const done = results[channel.stream_id];
+      if (done) {
+        map[channel.stream_id] = done;
+        continue;
+      }
+      const entry = cacheEntries[cacheKey(channel.source_id, channel.stream_id)];
+      if (entry && isFresh(entry, at)) map[channel.stream_id] = { ...entry.result, name: channel.name };
+    }
+    return map;
+  }, [channels, results, cacheEntries]);
+
   // Recomputed on every completed probe, so ranked results re-sort live
   const groups = useMemo(
     () =>
       rankResults(
         channels.map((channel): ProbeChannelResult => {
-          const done = results[channel.stream_id];
-          if (done) return done;
           const stub = pendingStub(channel);
-          return probingIds[channel.stream_id] ? { ...stub, status: 'probing' } : stub;
+          if (probingIds[channel.stream_id]) return { ...stub, status: 'probing' };
+          return effective[channel.stream_id] ?? stub;
         })
       ),
-    [channels, results, probingIds]
+    [channels, effective, probingIds]
   );
 
   // Channels being probed right now go first in the not-probed list
@@ -168,7 +228,7 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     [groups.pending]
   );
 
-  const doneCount = Object.keys(results).length;
+  const doneCount = Object.keys(effective).length;
   const total = channels.length;
   const elapsedSec = startedAt === null ? 0 : ((endedAt ?? now) - startedAt) / 1000;
   const etaSec = running ? estimateRemainingSeconds(elapsedSec, doneCount, total) : null;
@@ -180,9 +240,18 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     return t('rankTierUnknown');
   };
 
+  const cachedAtLabel = (r: ProbeChannelResult): string => {
+    if (r.status === 'pending' || r.status === 'probing') return '';
+    const entry = cacheEntries[cacheKey(r.source_id, r.stream_id)];
+    if (!entry) return '';
+    const minutes = ageMinutes(entry.at, Date.now());
+    return minutes < 1 ? t('rankAgeJustNow') : t('rankAgeMinutes', { minutes });
+  };
+
   const renderRow = (r: ProbeChannelResult) => {
     const channel = channelById.get(r.stream_id);
-    const alive = r.status === 'alive';
+    const noSignal = isNoSignal(r);
+    const alive = r.status === 'alive' && !noSignal;
     const probing = r.status === 'probing';
     const tier = classifyTier(r);
     const bitrate = effectiveVideoBitrate(r);
@@ -209,6 +278,8 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
               </>
             ) : probing ? (
               t('rankProbingRow')
+            ) : noSignal ? (
+              t('rankNoSignal')
             ) : (
               r.error_reason || r.status
             )}
@@ -218,6 +289,12 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
           <span className={`spr-tier spr-tier-${tier}`} title={t('rankTierHint')}>
             {tierLabel(tier)}
           </span>
+        )}
+        {cachedAtLabel(r) && <span className="spr-age">{cachedAtLabel(r)}</span>}
+        {channel && !probing && (
+          <button type="button" className="spr-btn" onClick={() => handleReprobe(channel)}>
+            {t('rankReprobe')}
+          </button>
         )}
         {channel && (
           <button type="button" className="spr-play" onClick={() => onPlayChannel(channel)}>
@@ -246,7 +323,6 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
   const nothingVisible =
     groups.ranked.length === 0 &&
     groups.pending.length === 0 &&
-    (hideLow || groups.low.length === 0) &&
     (hideDead || groups.dead.length === 0);
 
   return (
@@ -273,13 +349,15 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
             </button>
           )}
           <label className="spr-toggle">
-            <input type="checkbox" checked={hideLow} onChange={(e) => setHideLow(e.target.checked)} />
-            {t('rankHideLow')}
-          </label>
-          <label className="spr-toggle">
             <input type="checkbox" checked={hideDead} onChange={(e) => setHideDead(e.target.checked)} />
             {t('rankHideDead')}
           </label>
+          <button type="button" className="spr-btn" onClick={handleClearCache}>
+            {t('rankClearCache')}
+          </button>
+          <button type="button" className="spr-btn" onClick={handleExportLog}>
+            {t('rankExportLog')}
+          </button>
         </div>
 
         {(running || doneCount > 0) && (
@@ -303,7 +381,6 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
 
         <div className="spr-body">
           {renderSection('ranked', t('rankSectionRanked'), groups.ranked)}
-          {!hideLow && renderSection('low', t('rankSectionLow'), groups.low)}
           {!hideDead && renderSection('dead', t('rankSectionDead'), groups.dead)}
           {renderSection('pending', t('rankSectionPending'), pendingSorted)}
           {nothingVisible && <div className="spr-empty">{t('rankEmpty')}</div>}

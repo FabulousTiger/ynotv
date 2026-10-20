@@ -15,6 +15,16 @@ import { getRpdbPosterUrl } from '../../services/rpdb';
 import type { StoredMovie } from '../../db';
 import { resolvePlayUrl } from '../../services/stream-resolver';
 import { useDownloadStore } from '../../stores/downloadStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { getLastDestination, useDownloadDestinationStore } from '../../stores/downloadDestinationStore';
+import {
+  buildMoviePath,
+  downloadExtension,
+  resolveDownloadsRoot,
+  yearFromMeta,
+  type DownloadDestination,
+} from '../../services/downloadNaming';
+import { DownloadDestinationSelect } from './DownloadDestinationSelect';
 import { useVodFavoritesStore } from '../../stores/vodFavoritesStore';
 import { useActiveTmdbToken } from '../../hooks/useTmdbLists';
 import { useLazyVodTrailer, useTrailerPlayerMode, useTrailerSource } from '../../hooks/useLazyVodTrailer';
@@ -151,6 +161,7 @@ export function MovieDetail({ movie: movieProp, onClose, onPlay, apiKey, onCastC
       : null);
 
   const [downloading, setDownloading] = useState(false);
+  const [destination, setDestination] = useState<DownloadDestination>(() => getLastDestination('movie'));
   const startDownload = useDownloadStore((s) => s.startDownload);
 
   const isFav = useVodFavoritesStore((s) => s.isFavorite(movie.stream_id, 'movie'));
@@ -175,12 +186,20 @@ export function MovieDetail({ movie: movieProp, onClose, onPlay, apiKey, onCastC
     setDownloading(true);
     try {
       const resolved = await resolvePlayUrl(movie.source_id, movie.direct_url);
+      const savePath = buildMoviePath({
+        root: resolveDownloadsRoot(useSettingsStore.getState().downloadsPath),
+        destination,
+        title: movie.title || movie.name,
+        year: yearFromMeta(movie.year, movie.release_date),
+        ext: downloadExtension(resolved.url),
+      });
+      useDownloadDestinationStore.getState().setLast('movie', destination);
       await startDownload(
         movie.title || movie.name,
         resolved.url,
         resolved.userAgent,
         movie.duration ? movie.duration * 60 : undefined,
-        undefined,
+        savePath,
         posterUrl || undefined,
         movie.source_id,
         movie.direct_url,
@@ -193,7 +212,7 @@ export function MovieDetail({ movie: movieProp, onClose, onPlay, apiKey, onCastC
     } finally {
       setDownloading(false);
     }
-  }, [movie, startDownload, posterUrl]);
+  }, [movie, startDownload, posterUrl, destination]);
 
   // Use clean title if available, otherwise fall back to name
   const displayTitle = movie.title || movie.name;
@@ -363,6 +382,8 @@ export function MovieDetail({ movie: movieProp, onClose, onPlay, apiKey, onCastC
                 </svg>
                 {i18n.t('vod:addToPlaylist')}
               </button>
+
+              {movie.direct_url && <DownloadDestinationSelect value={destination} onChange={setDestination} />}
 
               {movie.direct_url && (
                 <button

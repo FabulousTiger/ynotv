@@ -1,17 +1,21 @@
 import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { buildSeriesFolderPreview, type DownloadDestination } from '../../services/downloadNaming';
+import { getLastDestination, useDownloadDestinationStore } from '../../stores/downloadDestinationStore';
+import { DownloadDestinationSelect } from './DownloadDestinationSelect';
 import './SeriesDownloadModal.css';
 
 export interface SeriesDownloadModalProps {
   isOpen: boolean;
   mode: 'single_season' | 'all_seasons';
   seriesTitle: string;
+  seriesYear?: string | null;
   selectedSeason?: number;
   totalEpisodesCount: number;
   totalSeasonsCount?: number;
   baseDownloadPath?: string;
-  onConfirm: (organizeByFolder: boolean) => void;
+  onConfirm: (organizeByFolder: boolean, destination: DownloadDestination) => void;
   onCancel: () => void;
 }
 
@@ -19,6 +23,7 @@ export function SeriesDownloadModal({
   isOpen,
   mode,
   seriesTitle,
+  seriesYear,
   selectedSeason = 1,
   totalEpisodesCount,
   totalSeasonsCount = 1,
@@ -28,11 +33,13 @@ export function SeriesDownloadModal({
 }: SeriesDownloadModalProps) {
   const { t } = useTranslation('vod');
   const [organizeByFolder, setOrganizeByFolder] = useState(true);
+  const [destination, setDestination] = useState<DownloadDestination>(() => getLastDestination('series'));
 
   // Reset default state when opened
   useEffect(() => {
     if (isOpen) {
       setOrganizeByFolder(true);
+      setDestination(getLastDestination('series'));
     }
   }, [isOpen]);
 
@@ -51,25 +58,23 @@ export function SeriesDownloadModal({
   }, [isOpen, onCancel]);
 
   const handleConfirm = useCallback(() => {
-    onConfirm(organizeByFolder);
-  }, [onConfirm, organizeByFolder]);
+    useDownloadDestinationStore.getState().setLast('series', destination);
+    onConfirm(organizeByFolder, destination);
+  }, [onConfirm, organizeByFolder, destination]);
 
   if (!isOpen) return null;
 
-  const sanitizedTitle = seriesTitle.replace(/[<>:"/\\|?*]/g, '_').trim();
-  const sep = (baseDownloadPath && baseDownloadPath.includes('\\')) ? '\\' : '/';
-  const displayBase = baseDownloadPath || (sep === '\\' ? 'Downloads\\Series' : 'Downloads/Series');
-
-  let previewPath = '';
-  if (organizeByFolder) {
-    if (mode === 'single_season') {
-      previewPath = `${displayBase}${sep}${sanitizedTitle}${sep}Season ${selectedSeason}${sep}`;
-    } else {
-      previewPath = `${displayBase}${sep}${sanitizedTitle}${sep}Season [1..${totalSeasonsCount}]${sep}`;
-    }
-  } else {
-    previewPath = `${displayBase}${sep}`;
-  }
+  const seasonLabel = mode === 'single_season'
+    ? `Season ${String(selectedSeason).padStart(2, '0')}`
+    : `Season [01..${String(totalSeasonsCount).padStart(2, '0')}]`;
+  const previewPath = buildSeriesFolderPreview(
+    baseDownloadPath ?? '',
+    destination,
+    seriesTitle,
+    seriesYear,
+    seasonLabel,
+    organizeByFolder
+  );
 
   const modalTitle = mode === 'single_season'
     ? t('downloadSeasonModalTitle', { season: selectedSeason })
@@ -113,6 +118,8 @@ export function SeriesDownloadModal({
               {summaryText}
             </span>
           </div>
+
+          <DownloadDestinationSelect value={destination} onChange={setDestination} />
 
           <div className="series-download-modal__options-label">
             {t('folderOrganization')}

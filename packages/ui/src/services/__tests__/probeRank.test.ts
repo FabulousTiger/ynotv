@@ -1,15 +1,15 @@
 /**
  * Sports "Probe & rank" ordering and tier heuristic (probeRank.ts).
  *
- * Streams sort by height, then fps, then bitrate. Low fps / low bitrate
- * streams sink to their own section rather than disappearing, and dead
- * streams always come last.
+ * High frame rate (>= 50 fps) streams sort first, then height, then bitrate.
+ * Nothing is excluded for low fps; no-signal streams sink with the dead ones.
  */
 import { describe, it, expect } from 'vitest';
 import {
   rankResults,
+  sortByProbe,
   classifyTier,
-  isLowQuality,
+  isNoSignal,
   resolutionClass,
   resolutionLabel,
   fpsClass,
@@ -36,25 +36,36 @@ function ids(list: ProbeChannelResult[]): string[] {
 }
 
 describe('rankResults', () => {
-  it('sorts by height, then fps, then bitrate (all descending)', () => {
+  it('puts >= 50 fps first, then height desc, then bitrate desc', () => {
     const groups: RankedGroups = rankResults([
       make('a', { height: 720, fps: 60, video_bitrate_kbps: 5000 }),
       make('b', { height: 1080, fps: 50, video_bitrate_kbps: 4000 }),
       make('c', { height: 1080, fps: 60, video_bitrate_kbps: 3000 }),
       make('d', { height: 1080, fps: 60, video_bitrate_kbps: 6000 }),
+      make('e', { height: 2160, fps: 25, video_bitrate_kbps: 9000 }),
+      make('f', { height: 1080, fps: 25, video_bitrate_kbps: 5000 }),
     ]);
-    expect(ids(groups.ranked)).toEqual(['d', 'c', 'b', 'a']);
+    expect(ids(groups.ranked)).toEqual(['d', 'b', 'c', 'a', 'e', 'f']);
   });
 
-  it('moves fps <= 30 and bitrate < 100 kbps into low quality, not out of the list', () => {
+  it('ranks 720p50 above 1080p25 and never excludes low fps', () => {
+    const groups = rankResults([
+      make('hd25', { height: 1080, fps: 25, video_bitrate_kbps: 5000 }),
+      make('hd30', { height: 1080, fps: 30, video_bitrate_kbps: 5000 }),
+      make('p50', { height: 720, fps: 50, video_bitrate_kbps: 3000 }),
+    ]);
+    expect(ids(groups.ranked)).toEqual(['p50', 'hd25', 'hd30']);
+    expect(groups.dead).toEqual([]);
+  });
+
+  it('treats video bitrate under 100 kbps as no signal, grouped with the dead', () => {
     const groups = rankResults([
       make('hi', { height: 720, fps: 60, video_bitrate_kbps: 3000 }),
-      make('slow', { height: 1080, fps: 30, video_bitrate_kbps: 5000 }),
-      make('ntsc', { height: 1080, fps: 29.97, video_bitrate_kbps: 5000 }),
       make('starved', { height: 1080, fps: 60, video_bitrate_kbps: 90 }),
+      make('dead', { status: 'dead' }),
     ]);
     expect(ids(groups.ranked)).toEqual(['hi']);
-    expect(ids(groups.low)).toEqual(['starved', 'slow', 'ntsc']);
+    expect(ids(groups.dead).sort()).toEqual(['dead', 'starved']);
   });
 
   it('puts dead streams last in their own group and keeps pending apart', () => {
@@ -69,9 +80,36 @@ describe('rankResults', () => {
     expect(ids(groups.dead)).toEqual(['dead', 'geo']);
   });
 
-  it('does not treat unknown fps or bitrate as low quality', () => {
-    expect(isLowQuality(make('x', { height: 1080 }))).toBe(false);
-    expect(isLowQuality(make('y', { fps: 31, video_bitrate_kbps: 100 }))).toBe(false);
+  it('does not treat unknown or exactly 100 kbps bitrate as no signal', () => {
+    expect(isNoSignal(make('x', { height: 1080 }))).toBe(false);
+    expect(isNoSignal(make('y', { fps: 25, video_bitrate_kbps: 100 }))).toBe(false);
+    expect(isNoSignal(make('z', { video_bitrate_kbps: 99 }))).toBe(true);
+  });
+});
+
+describe('sortByProbe', () => {
+  const known: Record<string, ProbeChannelResult> = {
+    best: make('best', { height: 720, fps: 50, video_bitrate_kbps: 3000 }),
+    ok: make('ok', { height: 1080, fps: 25, video_bitrate_kbps: 5000 }),
+    dead: make('dead', { status: 'dead' }),
+    quiet: make('quiet', { height: 1080, fps: 60, video_bitrate_kbps: 10 }),
+  };
+  const lookup = (id: string) => known[id];
+
+  it('orders alive ranked, then unprobed in original order, then dead / no signal', () => {
+    const out = sortByProbe(['u1', 'dead', 'ok', 'u2', 'quiet', 'best', 'u3'], lookup);
+    expect(out).toEqual(['best', 'ok', 'u1', 'u2', 'u3', 'dead', 'quiet']);
+  });
+
+  it('never drops items and does not mutate its input', () => {
+    const input = ['dead', 'u1', 'best'];
+    const out = sortByProbe(input, lookup);
+    expect(out).toHaveLength(3);
+    expect(input).toEqual(['dead', 'u1', 'best']);
+  });
+
+  it('keeps the original order when nothing is probed', () => {
+    expect(sortByProbe(['c', 'a', 'b'], () => undefined)).toEqual(['c', 'a', 'b']);
   });
 });
 

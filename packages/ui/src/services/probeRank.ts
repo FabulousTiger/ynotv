@@ -13,17 +13,18 @@
 
 import type { ProbeChannelResult } from './stream-probe';
 
-/** Streams at or below this frame rate sink to the low quality section. */
+/** Frame rate at or above which a stream counts as high frame rate. */
+export const HIGH_FPS_MIN = 50;
+/** Streams with a measured video bitrate below this (kbps) are "no signal". */
+export const NO_SIGNAL_KBPS = 100;
+/** Display-only: fps at or below this is coloured as low in the badge. */
 export const LOW_FPS_MAX = 30;
-/** Streams with a measured video bitrate below this (kbps) are low quality. */
-export const LOW_BITRATE_KBPS = 100;
 
-export type RankBucket = 'ranked' | 'low' | 'pending' | 'dead';
+export type RankBucket = 'ranked' | 'pending' | 'dead';
 export type RankTier = 'direct' | 'restream' | 'unknown';
 
 export interface RankedGroups {
   ranked: ProbeChannelResult[];
-  low: ProbeChannelResult[];
   pending: ProbeChannelResult[];
   dead: ProbeChannelResult[];
 }
@@ -53,10 +54,10 @@ export function isDeadStatus(r: ProbeChannelResult): boolean {
   return r.status === 'dead' || r.status === 'geoblocked' || r.status === 'drm' || r.status === 'placeholder';
 }
 
-export function isLowQuality(r: ProbeChannelResult): boolean {
-  if (typeof r.fps === 'number' && r.fps > 0 && r.fps <= LOW_FPS_MAX) return true;
+/** Connected, but the measured video bitrate is too low to be a picture. */
+export function isNoSignal(r: ProbeChannelResult): boolean {
   const vb = r.video_bitrate_kbps;
-  return typeof vb === 'number' && vb > 0 && vb < LOW_BITRATE_KBPS;
+  return typeof vb === 'number' && vb > 0 && vb < NO_SIGNAL_KBPS;
 }
 
 export function classifyTier(r: ProbeChannelResult): RankTier {
@@ -69,30 +70,53 @@ export function classifyTier(r: ProbeChannelResult): RankTier {
 
 export function bucketOf(r: ProbeChannelResult): RankBucket {
   if (r.status === 'pending' || r.status === 'probing') return 'pending';
-  if (isDeadStatus(r)) return 'dead';
-  return isLowQuality(r) ? 'low' : 'ranked';
+  if (isDeadStatus(r) || isNoSignal(r)) return 'dead';
+  return 'ranked';
 }
 
-/** Height desc, then fps desc, then bitrate desc, then name for stability. */
+/** High frame rate (>= 50 fps) first, then height desc, then bitrate desc, then name. */
 export function compareRank(a: ProbeChannelResult, b: ProbeChannelResult): number {
+  const dg = Number((b.fps ?? 0) >= HIGH_FPS_MIN) - Number((a.fps ?? 0) >= HIGH_FPS_MIN);
+  if (dg !== 0) return dg;
   const dh = (b.height ?? 0) - (a.height ?? 0);
   if (dh !== 0) return dh;
-  const df = (b.fps ?? 0) - (a.fps ?? 0);
-  if (df !== 0) return df;
   const db = (effectiveVideoBitrate(b) ?? 0) - (effectiveVideoBitrate(a) ?? 0);
   if (db !== 0) return db;
   return (a.name || '').localeCompare(b.name || '');
 }
 
 export function rankResults(results: ProbeChannelResult[]): RankedGroups {
-  const groups: RankedGroups = { ranked: [], low: [], pending: [], dead: [] };
+  const groups: RankedGroups = { ranked: [], pending: [], dead: [] };
   for (const r of results) {
     groups[bucketOf(r)].push(r);
   }
   groups.ranked.sort(compareRank);
-  groups.low.sort(compareRank);
   groups.dead.sort(compareRank);
   return groups;
+}
+
+/**
+ * Stable sort for channel lists (search results, pickers): alive ranked
+ * streams first, unprobed in their original order in the middle, dead and
+ * no-signal last. Never removes anything. `lookup` returns the known probe
+ * result for an item, or undefined when it has not been probed.
+ */
+export function sortByProbe<T>(items: T[], lookup: (item: T) => ProbeChannelResult | undefined): T[] {
+  const tagged = items.map((item, index) => {
+    const r = lookup(item);
+    const bucket: RankBucket | null = r ? bucketOf(r) : null;
+    const tier = bucket === 'ranked' ? 0 : bucket === 'dead' ? 2 : 1;
+    return { item, index, r, tier };
+  });
+  tagged.sort((a, b) => {
+    if (a.tier !== b.tier) return a.tier - b.tier;
+    if (a.tier === 0 && a.r && b.r) {
+      const c = compareRank(a.r, b.r);
+      if (c !== 0) return c;
+    }
+    return a.index - b.index;
+  });
+  return tagged.map((x) => x.item);
 }
 
 export type ResolutionClass = '4k' | '1080' | '720' | 'sd';

@@ -48,6 +48,9 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { MetadataBadge } from '../MetadataBadge';
+import { useProbeCacheStore } from '../../stores/probeCacheStore';
+import { cachedResultFor } from '../../services/probeCache';
+import { sortByProbe } from '../../services/probeRank';
 import './TeamChannelSettings.css';
 
 function parseCategoryIds(raw: string | string[] | number[] | undefined): string[] {
@@ -181,7 +184,13 @@ function ChannelPickerDialog({
 }: ChannelPickerDialogProps) {
   const { t } = useTranslation('sports');
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<StoredChannel[]>([]);
+  const [rawSearchResults, setSearchResults] = useState<StoredChannel[]>([]);
+  const probeEntries = useProbeCacheStore((s) => s.entries);
+  // Dead / no-signal streams last, unprobed in the middle (sort only)
+  const searchResults = useMemo(
+    () => sortByProbe(rawSearchResults, (ch) => cachedResultFor(probeEntries, ch, Date.now())),
+    [rawSearchResults, probeEntries]
+  );
   const [isSearching, setIsSearching] = useState(false);
   const [suggestions, setSuggestions] = useState<TeamChannelCandidate[]>([]);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);

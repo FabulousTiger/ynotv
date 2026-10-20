@@ -22,6 +22,14 @@ import type { VodPlayInfo } from '../../types/media';
 import { resolvePlayUrl } from '../../services/stream-resolver';
 import { useDownloadStore } from '../../stores/downloadStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { getLastDestination } from '../../stores/downloadDestinationStore';
+import {
+  buildSeriesEpisodePath,
+  downloadExtension,
+  resolveDownloadsRoot,
+  yearFromMeta,
+  type DownloadDestination,
+} from '../../services/downloadNaming';
 import { useVodFavoritesStore } from '../../stores/vodFavoritesStore';
 import { useActiveTmdbToken } from '../../hooks/useTmdbLists';
 import { useLazyVodTrailer, useTrailerPlayerMode, useTrailerSource } from '../../hooks/useLazyVodTrailer';
@@ -112,6 +120,27 @@ export function SeriesDetail({ series: seriesProp, onClose, onPlayEpisode, apiKe
         : getTmdbImageUrl(series.backdrop_path, TMDB_POSTER_SIZES.medium)  // TMDB path
       : null);
 
+  const downloadsPath = useSettingsStore((s) => s.downloadsPath);
+  const blurUnwatchedEpisodes = useSettingsStore((s) => s.blurUnwatchedEpisodes);
+  const downloadsRoot = resolveDownloadsRoot(downloadsPath);
+
+  // <root>\<Destination>\<Show (Year)>\Season 01\<Show (Year)> - S01E02 - <Title>.<ext>
+  const buildEpisodeSavePath = useCallback(
+    (episode: StoredEpisode, url: string, destination: DownloadDestination, organizeByFolder: boolean) =>
+      buildSeriesEpisodePath({
+        root: resolveDownloadsRoot(useSettingsStore.getState().downloadsPath),
+        destination,
+        showTitle: series.title || series.name,
+        showYear: yearFromMeta(series.year, series.release_date),
+        season: episode.season_num,
+        episode: episode.episode_num,
+        episodeTitle: episode.title,
+        ext: downloadExtension(url),
+        organizeByFolder,
+      }),
+    [series]
+  );
+
   const handleDownloadEpisode = useCallback(
     async (episode: StoredEpisode, e: React.MouseEvent) => {
       e.stopPropagation();
@@ -119,7 +148,7 @@ export function SeriesDetail({ series: seriesProp, onClose, onPlayEpisode, apiKe
       setDownloadingId(episode.id);
       try {
         const resolved = await resolvePlayUrl(series.source_id, episode.direct_url);
-        
+
         let episodeDuration = episode.duration ?? 0;
         if (!episodeDuration && episode.info?.duration) {
           const parsedDuration = Number(episode.info.duration);
@@ -127,13 +156,14 @@ export function SeriesDetail({ series: seriesProp, onClose, onPlayEpisode, apiKe
         }
 
         const epTitle = `${series.title || series.name} - S${episode.season_num}E${episode.episode_num}`;
+        const episodeSavePath = buildEpisodeSavePath(episode, resolved.url, getLastDestination('series'), true);
 
         await startDownload(
           epTitle,
           resolved.url,
           resolved.userAgent,
           episodeDuration ? episodeDuration * 60 : undefined,
-          undefined,
+          episodeSavePath,
           posterUrl || undefined,
           series.source_id,
           episode.direct_url,
@@ -147,24 +177,8 @@ export function SeriesDetail({ series: seriesProp, onClose, onPlayEpisode, apiKe
         setDownloadingId(null);
       }
     },
-    [series, startDownload, posterUrl]
+    [series, startDownload, posterUrl, buildEpisodeSavePath]
   );
-  // Downloads Path & Base Series Path
-  const downloadsPath = useSettingsStore((s) => s.downloadsPath);
-  const separateDownloadFolders = useSettingsStore((s) => s.separateDownloadFolders);
-  const blurUnwatchedEpisodes = useSettingsStore((s) => s.blurUnwatchedEpisodes);
-
-  const resolvedBaseSeriesPath = useMemo(() => {
-    if (!downloadsPath) return '';
-    if (separateDownloadFolders === false) return downloadsPath;
-    const sep = downloadsPath.includes('\\') ? '\\' : '/';
-    const clean = downloadsPath.endsWith(sep) ? downloadsPath.slice(0, -1) : downloadsPath;
-    const lower = clean.toLowerCase();
-    if (lower.endsWith(sep + 'series') || lower.endsWith('/series') || lower.endsWith('\\series')) {
-      return clean;
-    }
-    return `${clean}${sep}Series`;
-  }, [downloadsPath, separateDownloadFolders]);
 
   // Modal & Download states
   const [downloadModalMode, setDownloadModalMode] = useState<'single_season' | 'all_seasons' | null>(null);
@@ -182,48 +196,8 @@ export function SeriesDetail({ series: seriesProp, onClose, onPlayEpisode, apiKe
     return Object.values(seasons).reduce((acc, eps) => acc + (eps?.length || 0), 0);
   }, [seasons]);
 
-  const executeDownloadSeason = useCallback(async (organizeByFolder: boolean) => {
-    const episodes = seasons[selectedSeason] || [];
-    if (episodes.length === 0) return;
-
-    setDownloadingSeason(true);
-    try {
-      // 1. Resolve downloads path (from the settings store — hydrated at boot)
-      const { downloadsPath: currentDownloadsPath, separateDownloadFolders: currentSeparate } = useSettingsStore.getState();
-
-      let targetDir = currentDownloadsPath;
-      if (!targetDir) {
-        // Prompt user ONCE to pick a directory for the season downloads
-        const { open } = await import('@tauri-apps/plugin-dialog');
-        const selected = await open({
-          directory: true,
-          multiple: false,
-          title: i18n.t('vod:selectDirectorySeason', { season: selectedSeason }),
-        });
-        if (!selected || typeof selected !== 'string') {
-          setDownloadingSeason(false);
-          return;
-        }
-        targetDir = selected;
-      } else if (currentSeparate !== false) {
-        const sep = targetDir.includes('\\') ? '\\' : '/';
-        const clean = targetDir.endsWith(sep) ? targetDir.slice(0, -1) : targetDir;
-        const lower = clean.toLowerCase();
-        if (!lower.endsWith(sep + 'series') && !lower.endsWith('/series') && !lower.endsWith('\\series')) {
-          targetDir = `${clean}${sep}Series`;
-        }
-      }
-
-      const separator = targetDir.includes('\\') ? '\\' : '/';
-      const cleanBase = targetDir.endsWith(separator) ? targetDir.slice(0, -1) : targetDir;
-
-      let seasonDir = cleanBase;
-      if (organizeByFolder) {
-        const sanitizedShowTitle = (series.title || series.name).replace(/[<>:"/\\|?*]/g, '_').trim();
-        seasonDir = `${cleanBase}${separator}${sanitizedShowTitle}${separator}Season ${selectedSeason}`;
-      }
-
-      // 2. Queue all episodes
+  const queueSeasonEpisodes = useCallback(
+    async (episodes: StoredEpisode[], organizeByFolder: boolean, destination: DownloadDestination) => {
       for (const episode of episodes) {
         if (!episode.direct_url) continue;
 
@@ -237,10 +211,7 @@ export function SeriesDetail({ series: seriesProp, onClose, onPlayEpisode, apiKe
           }
 
           const epTitle = `${series.title || series.name} - S${episode.season_num}E${episode.episode_num}`;
-          const isHls = resolved.url.includes('.m3u8') || resolved.url.includes('/mono.m3u8');
-          const ext = isHls ? 'ts' : 'mp4';
-          const sanitizedTitle = epTitle.replace(/[<>:"/\\|?*]/g, '_').substring(0, 50);
-          const episodeSavePath = `${seasonDir}${separator}${sanitizedTitle}.${ext}`;
+          const episodeSavePath = buildEpisodeSavePath(episode, resolved.url, destination, organizeByFolder);
 
           await startDownload(
             epTitle,
@@ -258,87 +229,32 @@ export function SeriesDetail({ series: seriesProp, onClose, onPlayEpisode, apiKe
           console.error(`[SeriesDetail] Failed to queue episode S${episode.season_num}E${episode.episode_num}:`, err);
         }
       }
+    },
+    [series, startDownload, posterUrl, buildEpisodeSavePath]
+  );
+
+  const executeDownloadSeason = useCallback(async (organizeByFolder: boolean, destination: DownloadDestination) => {
+    const episodes = seasons[selectedSeason] || [];
+    if (episodes.length === 0) return;
+
+    setDownloadingSeason(true);
+    try {
+      await queueSeasonEpisodes(episodes, organizeByFolder, destination);
     } catch (error) {
       console.error('[SeriesDetail] Season download failed:', error);
       alert(i18n.t('vod:failedToStartSeasonDownload'));
     } finally {
       setDownloadingSeason(false);
     }
-  }, [series, selectedSeason, seasons, startDownload, posterUrl]);
+  }, [selectedSeason, seasons, queueSeasonEpisodes]);
 
-  const executeDownloadAllSeasons = useCallback(async (organizeByFolder: boolean) => {
+  const executeDownloadAllSeasons = useCallback(async (organizeByFolder: boolean, destination: DownloadDestination) => {
     if (seasonNumbers.length === 0) return;
 
     setDownloadingAllSeasons(true);
     try {
-      const { downloadsPath: currentDownloadsPath, separateDownloadFolders: currentSeparate } = useSettingsStore.getState();
-
-      let targetDir = currentDownloadsPath;
-      if (!targetDir) {
-        const { open } = await import('@tauri-apps/plugin-dialog');
-        const selected = await open({
-          directory: true,
-          multiple: false,
-          title: i18n.t('vod:selectDirectoryAllSeasons'),
-        });
-        if (!selected || typeof selected !== 'string') {
-          setDownloadingAllSeasons(false);
-          return;
-        }
-        targetDir = selected;
-      } else if (currentSeparate !== false) {
-        const sep = targetDir.includes('\\') ? '\\' : '/';
-        const clean = targetDir.endsWith(sep) ? targetDir.slice(0, -1) : targetDir;
-        const lower = clean.toLowerCase();
-        if (!lower.endsWith(sep + 'series') && !lower.endsWith('/series') && !lower.endsWith('\\series')) {
-          targetDir = `${clean}${sep}Series`;
-        }
-      }
-
-      const separator = targetDir.includes('\\') ? '\\' : '/';
-      const cleanBase = targetDir.endsWith(separator) ? targetDir.slice(0, -1) : targetDir;
-      const sanitizedShowTitle = (series.title || series.name).replace(/[<>:"/\\|?*]/g, '_').trim();
-
       for (const seasonNum of seasonNumbers) {
-        const episodes = seasons[seasonNum] || [];
-        const seasonDir = organizeByFolder
-          ? `${cleanBase}${separator}${sanitizedShowTitle}${separator}Season ${seasonNum}`
-          : cleanBase;
-
-        for (const episode of episodes) {
-          if (!episode.direct_url) continue;
-
-          try {
-            const resolved = await resolvePlayUrl(series.source_id, episode.direct_url);
-
-            let episodeDuration = episode.duration ?? 0;
-            if (!episodeDuration && episode.info?.duration) {
-              const parsedDuration = Number(episode.info.duration);
-              episodeDuration = isNaN(parsedDuration) ? 0 : parsedDuration;
-            }
-
-            const epTitle = `${series.title || series.name} - S${episode.season_num}E${episode.episode_num}`;
-            const isHls = resolved.url.includes('.m3u8') || resolved.url.includes('/mono.m3u8');
-            const ext = isHls ? 'ts' : 'mp4';
-            const sanitizedTitle = epTitle.replace(/[<>:"/\\|?*]/g, '_').substring(0, 50);
-            const episodeSavePath = `${seasonDir}${separator}${sanitizedTitle}.${ext}`;
-
-            await startDownload(
-              epTitle,
-              resolved.url,
-              resolved.userAgent,
-              episodeDuration ? episodeDuration * 60 : undefined,
-              episodeSavePath,
-              posterUrl || undefined,
-              series.source_id,
-              episode.direct_url,
-              undefined,
-              'Series'
-            );
-          } catch (err) {
-            console.error(`[SeriesDetail] Failed to queue episode S${episode.season_num}E${episode.episode_num}:`, err);
-          }
-        }
+        await queueSeasonEpisodes(seasons[seasonNum] || [], organizeByFolder, destination);
       }
     } catch (error) {
       console.error('[SeriesDetail] All seasons download failed:', error);
@@ -346,7 +262,7 @@ export function SeriesDetail({ series: seriesProp, onClose, onPlayEpisode, apiKe
     } finally {
       setDownloadingAllSeasons(false);
     }
-  }, [series, seasonNumbers, seasons, startDownload, posterUrl]);
+  }, [seasonNumbers, seasons, queueSeasonEpisodes]);
 
   // Fetch episode progress
   const { episodeProgress, loading: progressLoading } = useSeriesEpisodeProgress(series.series_id);
@@ -1057,14 +973,15 @@ export function SeriesDetail({ series: seriesProp, onClose, onPlayEpisode, apiKe
       selectedSeason={selectedSeason}
       totalEpisodesCount={downloadModalMode === 'all_seasons' ? totalAllEpisodesCount : (seasons[selectedSeason] || []).length}
       totalSeasonsCount={seasonNumbers.length}
-      baseDownloadPath={resolvedBaseSeriesPath}
-      onConfirm={(organizeByFolder) => {
+      seriesYear={yearFromMeta(series.year, series.release_date)}
+      baseDownloadPath={downloadsRoot}
+      onConfirm={(organizeByFolder, destination) => {
         const mode = downloadModalMode;
         setDownloadModalMode(null);
         if (mode === 'all_seasons') {
-          executeDownloadAllSeasons(organizeByFolder);
+          executeDownloadAllSeasons(organizeByFolder, destination);
         } else {
-          executeDownloadSeason(organizeByFolder);
+          executeDownloadSeason(organizeByFolder, destination);
         }
       }}
       onCancel={() => setDownloadModalMode(null)}

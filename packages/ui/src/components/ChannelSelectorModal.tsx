@@ -1,8 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { db, type StoredChannel, type StoredCategory } from '../db';
 import { buildSearchQueryClauses } from '../utils/searchNormalization';
 import { useSettingsStore, DEFAULT_MAX_SEARCH_RESULTS } from '../stores/settingsStore';
+import { useProbeCacheStore } from '../stores/probeCacheStore';
+import { cachedResultFor } from '../services/probeCache';
+import { sortByProbe } from '../services/probeRank';
 import './CustomGroupManager.css'; // Reuse the same styles
 
 interface ChannelSelectorModalProps {
@@ -42,7 +45,13 @@ interface SearchResultsProps {
 
 function SearchResults({ query, selectedChannelId, onSelect, enabledSourceIdsKey, enabledSourceIds, sources }: SearchResultsProps) {
   const { t } = useTranslation('live');
-  const [results, setResults] = useState<StoredChannel[] | undefined>();
+  const [rawResults, setResults] = useState<StoredChannel[] | undefined>();
+  const probeEntries = useProbeCacheStore((s) => s.entries);
+  // Dead / no-signal streams last, unprobed in the middle (sort only)
+  const results = useMemo(
+    () => (rawResults ? sortByProbe(rawResults, (ch) => cachedResultFor(probeEntries, ch, Date.now())) : rawResults),
+    [rawResults, probeEntries]
+  );
 
   useEffect(() => {
     let isMounted = true;
