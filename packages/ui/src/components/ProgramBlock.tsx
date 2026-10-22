@@ -19,6 +19,7 @@ interface ProgramBlockProps {
   isRecording?: boolean;
   isScheduled?: boolean;
   isCatchupAvailable?: boolean;
+  searchMatch?: boolean;
 }
 
 interface ProgramStyle {
@@ -103,6 +104,7 @@ export const ProgramBlock = memo(function ProgramBlock({
   isRecording = false,
   isScheduled = false,
   isCatchupAvailable = false,
+  searchMatch = false,
 }: ProgramBlockProps) {
   useTranslation();
   const style = useMemo(
@@ -152,7 +154,7 @@ export const ProgramBlock = memo(function ProgramBlock({
 
   return (
     <div
-      className={`program-block epg-program-block ${isCurrent ? 'current' : ''} ${isPast ? 'past' : ''} ${isRecording ? 'is-recording' : ''} ${isScheduled ? 'is-scheduled' : ''} ${isCatchupAvailable && (isPast || isCurrent) ? 'catchup-available' : ''}`}
+      className={`program-block epg-program-block ${isCurrent ? 'current' : ''} ${searchMatch ? 'search-match' : ''} ${isPast ? 'past' : ''} ${isRecording ? 'is-recording' : ''} ${isScheduled ? 'is-scheduled' : ''} ${isCatchupAvailable && (isPast || isCurrent) ? 'catchup-available' : ''}`}
       style={{
         left: `${style.left}px`,
         width: `${style.width}px`,

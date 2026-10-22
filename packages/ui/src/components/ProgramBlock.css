@@ -236,3 +236,9 @@
   font-size: var(--prog-catch-icon-font-size, 1.1em);
   vertical-align: var(--prog-catch-icon-valign, middle);
 }
+/* Programme that matched the search query (All tab) */
+.program-block.search-match {
+  background: color-mix(in srgb, #facc15 22%, transparent);
+  border-color: #facc15;
+  box-shadow: inset 0 0 0 1px #facc15;
+}

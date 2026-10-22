@@ -43,6 +43,7 @@ interface ChannelRowProps {
   epgMetadataBadgeAudioBitrate?: boolean;
   altView?: boolean;
   currentTime?: Date | number;
+  highlightProgramIds?: Set<string>;
 }
 
 export interface CurrentProgramInfo {
@@ -93,6 +94,7 @@ export const ChannelRow = memo(function ChannelRow({
   epgMetadataBadgeAudioBitrate,
   altView,
   currentTime,
+  highlightProgramIds,
 }: ChannelRowProps) {
   // Per-source logo overrides are read straight from the store so changes
   // apply live without re-running the channel query.
@@ -423,6 +425,7 @@ export const ChannelRow = memo(function ChannelRow({
                 isRecording={isProgramRecording}
                 isScheduled={isProgramScheduled}
                 isCatchupAvailable={isCatchupAvailable}
+                searchMatch={highlightProgramIds?.has(program.id) ?? false}
               />
             );
           })

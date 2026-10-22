@@ -3953,3 +3953,13 @@ html[data-theme]:has(.guide-transparent-mode) .category-strip {
 .modern-ui-v3 .guide-panel.alt-row-layout .guide-top-section.alternate-view > .guide-preview-pane {
   border-right: none;
 }
+
+/* All-tab sort selector */
+.search-sort-select {
+  background: var(--surface-color, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.12));
+  border-radius: 14px;
+  color: var(--text-secondary, rgba(255, 255, 255, 0.7));
+  font-size: 0.78rem;
+  padding: 3px 8px;
+}

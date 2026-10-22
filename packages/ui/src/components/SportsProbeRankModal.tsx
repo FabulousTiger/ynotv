@@ -2,9 +2,11 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { StoredChannel } from '../db';
 import { quickProbeChannel, type ProbeChannelResult } from '../services/stream-probe';
+import { save } from '@tauri-apps/plugin-dialog';
+import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { useToastStore } from '../stores/toastStore';
 import {
   rankResults,
-  classifyTier,
   effectiveVideoBitrate,
   resolutionClass,
   resolutionLabel,
@@ -13,7 +15,6 @@ import {
   estimateRemainingSeconds,
   formatDuration,
   isNoSignal,
-  type RankTier,
 } from '../services/probeRank';
 import { ageMinutes, cacheKey, isFresh } from '../services/probeCache';
 import { useProbeCacheStore } from '../stores/probeCacheStore';
@@ -53,7 +54,10 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [endedAt, setEndedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [hidden, setHidden] = useState(false);
+  const [exportMsg, setExportMsg] = useState<{ text: string; error?: boolean } | null>(null);
   const runIdRef = useRef(0);
+  const resultsRef = useRef<Record<string, ProbeChannelResult>>({});
   const cacheEntries = useProbeCacheStore((s) => s.entries);
   const recordProbe = useProbeCacheStore((s) => s.record);
   const clearProbeCache = useProbeCacheStore((s) => s.clearCache);
@@ -61,12 +65,15 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
   // Fresh state whenever the dialog opens or closes; also abandons any run
   useEffect(() => {
     runIdRef.current += 1;
+    resultsRef.current = {};
     setResults({});
     setProbingIds({});
     setCurrentName('');
     setStartedAt(null);
     setEndedAt(null);
     setRunning(false);
+    setHidden(false);
+    setExportMsg(null);
   }, [isOpen]);
 
   // Live clock for elapsed time and ETA while a run is active
@@ -93,6 +100,7 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
       }
       recordProbe(result, channel.source_name);
       if (runIdRef.current !== runId) return;
+      resultsRef.current = { ...resultsRef.current, [channel.stream_id]: result };
       setResults((prev) => ({ ...prev, [channel.stream_id]: result }));
       setProbingIds((prev) => {
         const next = { ...prev };
@@ -108,6 +116,7 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     runIdRef.current += 1;
     const runId = runIdRef.current;
     const begun = Date.now();
+    resultsRef.current = {};
     setResults({});
     setProbingIds({});
     setCurrentName('');
@@ -142,9 +151,16 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
         setRunning(false);
         setProbingIds({});
         setEndedAt(Date.now());
+        const best = rankResults(Object.values(resultsRef.current)).ranked[0];
+        useToastStore.getState().addToast(
+          best
+            ? t('rankToastDone', { count: channels.length, name: best.name })
+            : t('rankToastDoneNone', { count: channels.length }),
+          'success'
+        );
       }
     }
-  }, [running, channels, probeOne]);
+  }, [running, channels, probeOne, t]);
 
   const handleReprobe = useCallback(
     (channel: StoredChannel) => {
@@ -158,21 +174,29 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     setResults({});
   }, [clearProbeCache]);
 
-  const handleExportLog = useCallback(() => {
-    const log = useProbeCacheStore.getState().log;
-    const blob = new Blob([JSON.stringify(log, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.style.display = 'none';
-    a.href = url;
-    a.download = 'ynotv-probe-log.json';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 300);
-  }, []);
+  const handleExportLog = useCallback(async () => {
+    const json = JSON.stringify(useProbeCacheStore.getState().log, null, 2);
+    try {
+      const path = await save({
+        defaultPath: 'H:\\Downloads\\ynotv-probe-log.json',
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      });
+      if (!path) return;
+      await writeTextFile(path, json);
+      setExportMsg({ text: t('rankExportSaved', { path }) });
+    } catch (err) {
+      setExportMsg({ text: t('rankExportFailed', { error: err instanceof Error ? err.message : String(err) }), error: true });
+    }
+  }, [t]);
+
+  const handleCopyLog = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(useProbeCacheStore.getState().log, null, 2));
+      setExportMsg({ text: t('rankCopied') });
+    } catch (err) {
+      setExportMsg({ text: t('rankExportFailed', { error: err instanceof Error ? err.message : String(err) }), error: true });
+    }
+  }, [t]);
 
   const handleStop = useCallback(() => {
     runIdRef.current += 1;
@@ -181,11 +205,15 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     setEndedAt(Date.now());
   }, []);
 
+  // While probing, the corner X only hides the window; idle, it closes
   const handleClose = useCallback(() => {
+    if (running) {
+      setHidden(true);
+      return;
+    }
     runIdRef.current += 1;
-    setRunning(false);
     onClose();
-  }, [onClose]);
+  }, [running, onClose]);
 
   const channelById = useMemo(() => {
     const map = new Map<string, StoredChannel>();
@@ -234,12 +262,6 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
   const etaSec = running ? estimateRemainingSeconds(elapsedSec, doneCount, total) : null;
   const percent = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
-  const tierLabel = (tier: RankTier): string => {
-    if (tier === 'direct') return t('rankTierDirect');
-    if (tier === 'restream') return t('rankTierRestream');
-    return t('rankTierUnknown');
-  };
-
   const cachedAtLabel = (r: ProbeChannelResult): string => {
     if (r.status === 'pending' || r.status === 'probing') return '';
     const entry = cacheEntries[cacheKey(r.source_id, r.stream_id)];
@@ -253,7 +275,6 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
     const noSignal = isNoSignal(r);
     const alive = r.status === 'alive' && !noSignal;
     const probing = r.status === 'probing';
-    const tier = classifyTier(r);
     const bitrate = effectiveVideoBitrate(r);
     return (
       <div className={`spr-row${probing ? ' spr-row-probing' : ''}`} key={r.stream_id}>
@@ -285,11 +306,6 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
             )}
           </div>
         </div>
-        {alive && (
-          <span className={`spr-tier spr-tier-${tier}`} title={t('rankTierHint')}>
-            {tierLabel(tier)}
-          </span>
-        )}
         {cachedAtLabel(r) && <span className="spr-age">{cachedAtLabel(r)}</span>}
         {channel && !probing && (
           <button type="button" className="spr-btn" onClick={() => handleReprobe(channel)}>
@@ -320,6 +336,30 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
 
   if (!isOpen) return null;
 
+  if (hidden) {
+    const best = groups.ranked[0]?.name;
+    const chipText = running
+      ? best
+        ? t('rankChipRunningBest', { current: Math.min(doneCount + 1, total), total, name: best })
+        : t('rankChipRunning', { current: Math.min(doneCount + 1, total), total })
+      : best
+        ? t('rankChipDoneBest', { done: doneCount, total, name: best })
+        : t('rankChipDone', { done: doneCount, total });
+    return (
+      <div className={`spr-chip-bar${running ? ' spr-chip-bar-running' : ''}`}>
+        <button type="button" className="spr-chip-open" onClick={() => setHidden(false)} title={t('rankChipOpen')}>
+          {running && <span className="spr-spinner" aria-hidden="true" />}
+          <span>{chipText}</span>
+        </button>
+        {!running && (
+          <button type="button" className="spr-chip-dismiss" onClick={handleClose} aria-label={t('close')}>
+            ✕
+          </button>
+        )}
+      </div>
+    );
+  }
+
   const nothingVisible =
     groups.ranked.length === 0 &&
     groups.pending.length === 0 &&
@@ -333,15 +373,21 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
             <div className="spr-title">{t('rankTitle', { query })}</div>
             <div className="spr-subtitle">{t('rankSubtitle', { count: total })}</div>
           </div>
-          <button type="button" className="spr-close" onClick={handleClose} aria-label={t('close')}>
+          <button
+            type="button"
+            className="spr-close"
+            onClick={handleClose}
+            aria-label={running ? t('rankHide') : t('close')}
+            title={running ? t('rankHide') : t('close')}
+          >
             ✕
           </button>
         </div>
 
         <div className="spr-toolbar">
           {running ? (
-            <button type="button" className="spr-btn" onClick={handleStop}>
-              {t('rankStop')}
+            <button type="button" className="spr-btn spr-btn-stop" onClick={handleStop}>
+              {t('rankStopProbing')}
             </button>
           ) : (
             <button type="button" className="spr-btn spr-btn-primary" onClick={handleStart} disabled={total === 0}>
@@ -355,10 +401,15 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
           <button type="button" className="spr-btn" onClick={handleClearCache}>
             {t('rankClearCache')}
           </button>
-          <button type="button" className="spr-btn" onClick={handleExportLog}>
+          <button type="button" className="spr-btn" onClick={() => void handleExportLog()}>
             {t('rankExportLog')}
           </button>
+          <button type="button" className="spr-btn" onClick={() => void handleCopyLog()}>
+            {t('rankCopyLog')}
+          </button>
         </div>
+        {running && <div className="spr-bg-hint">{t('rankBackgroundHint')}</div>}
+        {exportMsg && <div className={`spr-export-msg${exportMsg.error ? ' spr-export-error' : ''}`}>{exportMsg.text}</div>}
 
         {(running || doneCount > 0) && (
           <div className="spr-progress-block">

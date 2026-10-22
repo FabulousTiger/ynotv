@@ -7334,9 +7334,11 @@ function useTmdbPresencePoster(
         onProbeRank={
           sportsSearchOrigin !== null &&
           debouncedSearchQuery === sportsSearchOrigin &&
-          searchChannels.length > 0 &&
           sportsRankChannels === null
-            ? () => setSportsRankChannels([...searchChannels])
+            ? (list?: StoredChannel[]) => {
+                const picked = list ?? searchChannels;
+                if (picked.length > 0) setSportsRankChannels([...picked]);
+              }
             : undefined
         }
         searchPrograms={searchPrograms}

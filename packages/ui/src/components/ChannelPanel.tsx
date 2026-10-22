@@ -34,6 +34,9 @@ import { pickCurrentProgram, EPG_WINDOW_BACK_MS, EPG_WINDOW_FWD_MS } from '../ut
 import { clampRowPreviewWidthPct, didPreviewWidthChange } from '../utils/guidePreviewWidth';
 import { useTranslation } from 'react-i18next';
 import i18n from '../i18n';
+import { useProbeCacheStore } from '../stores/probeCacheStore';
+import { cachedResultFor } from '../services/probeCache';
+import { mergeAllMatches, type AllSort } from '../services/searchMerge';
 
 function formatSeekTime(seconds: number): string {
   if (!isFinite(seconds) || seconds < 0) return '0:00';
@@ -128,6 +131,7 @@ interface ChannelRowData {
   epgMetadataBadgeAudioBitrate: boolean;
   threeColumn: boolean;
   currentTime?: Date;
+  highlightProgramIds?: Set<string>;
 }
 
 const ChannelRowVirtuoso = memo(function ChannelRowVirtuoso({
@@ -173,6 +177,7 @@ const ChannelRowVirtuoso = memo(function ChannelRowVirtuoso({
       epgMetadataBadgeAudioBitrate={data.epgMetadataBadgeAudioBitrate}
       altView={data.threeColumn}
       currentTime={data.currentTime}
+      highlightProgramIds={data.highlightProgramIds}
     />
   );
 }, (prevProps, nextProps) => {
@@ -223,6 +228,7 @@ const ChannelRowVirtuoso = memo(function ChannelRowVirtuoso({
          prevData.epgMetadataBadgeSound === nextData.epgMetadataBadgeSound &&
          prevData.epgMetadataBadgeBitrate === nextData.epgMetadataBadgeBitrate &&
          prevData.epgMetadataBadgeAudioBitrate === nextData.epgMetadataBadgeAudioBitrate &&
+         prevData.highlightProgramIds === nextData.highlightProgramIds &&
          !recordingsChanged &&
          !programsChanged &&
          !timeChanged;
@@ -333,7 +339,7 @@ interface ChannelPanelProps {
   isSearchMode?: boolean;
   searchQuery?: string;
   searchChannels?: StoredChannel[];
-  onProbeRank?: () => void;
+  onProbeRank?: (channels?: StoredChannel[]) => void;
   searchPrograms?: StoredProgram[];
   searchScope?: 'channels' | 'epg' | 'both';
   isWatchlistMode?: boolean;
@@ -852,7 +858,9 @@ export function ChannelPanel({
   }, [isSearchMode, searchPrograms]);
 
   // Active search-result tab (single-select: only one section renders at a time)
-  const [searchTab, setSearchTab] = useState<'channels' | 'live' | 'upcoming'>('channels');
+  const [searchTab, setSearchTab] = useState<'all' | 'channels' | 'live' | 'upcoming'>('channels');
+  const [allSort, setAllSort] = useState<AllSort>('smart');
+  const probeEntries = useProbeCacheStore((s) => s.entries);
 
   // True while the batched program queries for the search results are running
   // (drives the "Searching…" indicator in the header)
@@ -909,12 +917,28 @@ export function ChannelPanel({
   }, [isSearchMode, searchScope, activePrograms, searchProgramChannels, searchResultsOrder]);
 
   // Tabs available for the current search scope, and the effective active tab
-  const availableSearchTabs: ('channels' | 'live' | 'upcoming')[] = [];
+  const availableSearchTabs: ('all' | 'channels' | 'live' | 'upcoming')[] = [];
+  if (searchScope === 'both') availableSearchTabs.push('all');
   if (searchScope !== 'epg') availableSearchTabs.push('channels');
   if (searchScope !== 'channels') {
     availableSearchTabs.push('live', 'upcoming');
   }
   const effectiveSearchTab = availableSearchTabs.includes(searchTab) ? searchTab : availableSearchTabs[0] ?? 'channels';
+
+  // All tab: name and programme matches merged, deduped and sorted
+  const allEntries = useMemo(() => {
+    if (!isSearchMode || searchScope !== 'both') return [];
+    const nowMs = Date.now();
+    return mergeAllMatches({
+      nameChannels: searchChannels ?? [],
+      programEntries: [...liveChannels, ...upcomingChannels],
+      nowMs,
+      lookup: (ch) => cachedResultFor(probeEntries, ch, nowMs),
+      sort: allSort,
+    });
+  }, [isSearchMode, searchScope, searchChannels, liveChannels, upcomingChannels, probeEntries, allSort]);
+  const allChannels = useMemo(() => allEntries.map((e) => e.channel), [allEntries]);
+  const allHighlightIds = useMemo(() => new Set(allEntries.flatMap((e) => e.matchedProgramIds)), [allEntries]);
 
   // State for watchlist data
   const [watchlistPrograms, setWatchlistPrograms] = useState<Map<string, StoredProgram[]>>(new Map());
@@ -1352,7 +1376,7 @@ export function ChannelPanel({
 
             // Get all matching programs for this channel
             const channelMatchingProgs = searchPrograms.filter(p => p.stream_id === streamId);
-            channelProgramsMap.set(streamId, channelMatchingProgs);
+            if (!channelProgramsMap.has(streamId)) channelProgramsMap.set(streamId, channelMatchingProgs);
           }
         }
       }
@@ -2963,8 +2987,9 @@ export function ChannelPanel({
     // Search results always render the traditional timeline cells, even when
     // the 3-column strip view is active.
     threeColumn: false,
+    highlightProgramIds: effectiveSearchTab === 'all' ? allHighlightIds : undefined,
   }), [
-    channelSortOrder, searchChannelPrograms, windowStart, windowEnd, pixelsPerHour, visibleHours,
+    channelSortOrder, searchChannelPrograms, windowStart, windowEnd, pixelsPerHour, visibleHours, effectiveSearchTab, allHighlightIds,
     handleSearchChannelClick, onPlayCatchup, refreshSearchResults, categoryId, activeRecordings,
     currentLayout, onSendToSlot, onPlayInPopout, onPlayInExternal, currentChannel, highlightChannel,
     includeSourceInSearch, sourceNames, epgMetadataBadgeResolution, epgMetadataBadgeFps, epgMetadataBadgeSound, epgMetadataBadgeBitrate, epgMetadataBadgeAudioBitrate,
@@ -3857,16 +3882,20 @@ export function ChannelPanel({
                 {availableSearchTabs.length > 1 && (
                   <div className="guide-search-tabs">
                     {availableSearchTabs.map((tab) => {
-                      const count = tab === 'channels'
-                        ? (searchChannels?.length || 0)
-                        : tab === 'live'
-                          ? liveChannels.length
-                          : upcomingChannels.length;
-                      const label = tab === 'channels'
-                        ? t('searchTabChannels')
-                        : tab === 'live'
-                          ? t('searchTabLive')
-                          : t('searchTabUpcoming');
+                      const count = tab === 'all'
+                        ? allEntries.length
+                        : tab === 'channels'
+                          ? (searchChannels?.length || 0)
+                          : tab === 'live'
+                            ? liveChannels.length
+                            : upcomingChannels.length;
+                      const label = tab === 'all'
+                        ? t('searchTabAll')
+                        : tab === 'channels'
+                          ? t('searchTabChannels')
+                          : tab === 'live'
+                            ? t('searchTabLive')
+                            : t('searchTabUpcoming');
                       return (
                         <button
                           key={tab}
@@ -3880,6 +3909,18 @@ export function ChannelPanel({
                         </button>
                       );
                     })}
+                    {effectiveSearchTab === 'all' && (
+                      <select
+                        className="search-sort-select"
+                        value={allSort}
+                        onChange={(e) => setAllSort(e.target.value as AllSort)}
+                        aria-label={t('searchSortLabel')}
+                      >
+                        <option value="smart">{t('searchSortSmart')}</option>
+                        <option value="name">{t('searchSortName')}</option>
+                        <option value="quality">{t('searchSortQuality')}</option>
+                      </select>
+                    )}
                   </div>
                 )}
               </>
@@ -4119,7 +4160,7 @@ export function ChannelPanel({
                 </span>
               </button>
             )}
-            {(!isSearchMode || (effectiveSearchTab === 'channels' && searchScope !== 'epg')) && (
+            {(!isSearchMode || effectiveSearchTab === 'all' || (effectiveSearchTab === 'channels' && searchScope !== 'epg')) && (
               <div className="guide-nav">
                 <button className="guide-nav-btn" onClick={goBack} title={t('previousHour')}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6" /></svg>
@@ -4171,7 +4212,7 @@ export function ChannelPanel({
         {/* Time Scale - hidden in watchlist mode; in search mode only shown when the
             Channels tab is active and channel matches are present (EPG program
             results have no timeline) */}
-        {!isWatchlistMode && (!isSearchMode || (effectiveSearchTab === 'channels' && searchScope !== 'epg' && searchChannels && searchChannels.length > 0)) && (
+        {!isWatchlistMode && (!isSearchMode || (effectiveSearchTab === 'all' && allChannels.length > 0) || (effectiveSearchTab === 'channels' && searchScope !== 'epg' && searchChannels && searchChannels.length > 0)) && (
           <div className="guide-time-header">
             <div className="guide-time-header-spacer" style={{ width: 'var(--epg-channel-column-width, 264px)' }}>
               {!isSearchMode && !allChannelsCapped && !epgHiddenButtons.includes('channel-search') && (
@@ -4338,6 +4379,53 @@ export function ChannelPanel({
             /* Search Results View - tabbed: Channels (EPG timeline), Live Now EPG,
                 Upcoming EPG. Only the picked tab renders (Channels is the default). */
             <div className="guide-search-results guide-channels">
+              {/* All tab: merged name + programme matches, matched programme highlighted */}
+              {effectiveSearchTab === 'all' && (
+                allChannels.length > 0 ? (
+                  <div className="search-section search-channels-section">
+                    <div className="search-channels-timeline">
+                      <div ref={handleSearchScrollerRef} className="search-virtuoso overflow-y-auto max-h-full">
+                        <VirtualList
+                          key="search-all"
+                          items={allChannels}
+                          estimateItemHeight={searchChannelRowHeight}
+                          onVirtualItemsChange={onSearchChannelVirtualItemsChange}
+                          renderItem={(channel, index) => (
+                            <ChannelRowVirtuoso
+                              index={index}
+                              channel={channel}
+                              data={searchChannelRowContext}
+                            />
+                          )}
+                          overscan={4}
+                        />
+                      </div>
+                      {currentTimeIndicatorPosition !== null && (
+                        <div
+                          className="guide-current-time-indicator"
+                          style={{
+                            left: `calc(${currentTimeIndicatorPosition}px + var(--epg-channel-column-width, 264px))`,
+                            ...(searchChannelsListHeight > 0 ? { height: `${searchChannelsListHeight}px` } : {}),
+                          }}
+                        />
+                      )}
+                    </div>
+                    {onProbeRank && (
+                      <div className="search-probe-footer">
+                        <button type="button" className="search-probe-btn" onClick={() => onProbeRank(allChannels)}>
+                          {i18n.t('probe:rankButton')}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="guide-empty">
+                    <h3>{t('noResultsFound')}</h3>
+                    <p>{t('tryDifferentTerm')}</p>
+                  </div>
+                )
+              )}
+
               {/* Channels tab - rendered like the regular EPG grid with a timeline
                   and the current-time indicator line. Virtualized so searches with
                   hundreds of matches stay smooth. */}
@@ -4374,7 +4462,7 @@ export function ChannelPanel({
                     </div>
                     {onProbeRank && (
                       <div className="search-probe-footer">
-                        <button type="button" className="search-probe-btn" onClick={onProbeRank}>
+                        <button type="button" className="search-probe-btn" onClick={() => onProbeRank()}>
                           {i18n.t('probe:rankButton')}
                         </button>
                       </div>
