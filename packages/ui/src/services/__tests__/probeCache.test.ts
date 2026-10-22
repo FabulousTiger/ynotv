@@ -10,6 +10,7 @@ import {
   buildLogEntry,
   cacheKey,
   isFresh,
+  mergeEffectiveResults,
   pruneExpired,
   sanitizeProbeCache,
   slimResult,
@@ -129,5 +130,31 @@ describe('sanitizeProbeCache', () => {
       now
     );
     expect(value && Object.keys(value.entries)).toEqual(['fresh']);
+  });
+});
+
+describe('mergeEffectiveResults', () => {
+  const now = 10_000_000;
+  const chans = [
+    { source_id: 'src_1', stream_id: 'a', name: 'A' },
+    { source_id: 'src_1', stream_id: 'b', name: 'B' },
+  ];
+  const entry = (id: string, at: number): ProbeCacheEntry => ({ result: make(id, { name: 'old' }), at });
+
+  it('uses cached results when every channel is cached (nothing probed this run)', () => {
+    const entries = { [cacheKey('src_1', 'a')]: entry('a', now), [cacheKey('src_1', 'b')]: entry('b', now) };
+    const merged = mergeEffectiveResults(chans, {}, entries, now);
+    expect(Object.keys(merged)).toEqual(['a', 'b']);
+    expect(merged.a.name).toBe('A');
+  });
+
+  it('merges this run with fresh cache and ignores stale entries', () => {
+    const entries = {
+      [cacheKey('src_1', 'a')]: entry('a', now),
+      [cacheKey('src_1', 'b')]: entry('b', now - PROBE_CACHE_TTL_MS - 1),
+    };
+    const fresh = make('b', { name: 'B' });
+    expect(Object.keys(mergeEffectiveResults(chans, {}, entries, now))).toEqual(['a']);
+    expect(mergeEffectiveResults(chans, { b: fresh }, entries, now).b).toBe(fresh);
   });
 });

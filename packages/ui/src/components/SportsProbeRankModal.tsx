@@ -16,7 +16,7 @@ import {
   formatDuration,
   isNoSignal,
 } from '../services/probeRank';
-import { ageMinutes, cacheKey, isFresh } from '../services/probeCache';
+import { ageMinutes, cacheKey, isFresh, mergeEffectiveResults } from '../services/probeCache';
 import { useProbeCacheStore } from '../stores/probeCacheStore';
 import './SportsProbeRankModal.css';
 
@@ -151,7 +151,13 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
         setRunning(false);
         setProbingIds({});
         setEndedAt(Date.now());
-        const best = rankResults(Object.values(resultsRef.current)).ranked[0];
+        const merged = mergeEffectiveResults(
+          channels,
+          resultsRef.current,
+          useProbeCacheStore.getState().entries,
+          Date.now()
+        );
+        const best = rankResults(Object.values(merged)).ranked[0];
         useToastStore.getState().addToast(
           best
             ? t('rankToastDone', { count: channels.length, name: best.name })
@@ -223,18 +229,7 @@ export function SportsProbeRankModal({ isOpen, query, channels, onClose, onPlayC
 
   // This session's results win; otherwise a fresh cached result is shown
   const effective = useMemo(() => {
-    const at = Date.now();
-    const map: Record<string, ProbeChannelResult> = {};
-    for (const channel of channels) {
-      const done = results[channel.stream_id];
-      if (done) {
-        map[channel.stream_id] = done;
-        continue;
-      }
-      const entry = cacheEntries[cacheKey(channel.source_id, channel.stream_id)];
-      if (entry && isFresh(entry, at)) map[channel.stream_id] = { ...entry.result, name: channel.name };
-    }
-    return map;
+    return mergeEffectiveResults(channels, results, cacheEntries, Date.now());
   }, [channels, results, cacheEntries]);
 
   // Recomputed on every completed probe, so ranked results re-sort live

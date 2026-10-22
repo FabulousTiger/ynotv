@@ -26,6 +26,7 @@ import { NowPlayingBar } from './NowPlayingBar';
 import { AudioVisualizer, type VisualizerMode } from './AudioVisualizer';
 import { FailoverChannelOverlay } from './FailoverChannelOverlay';
 import type { StoredChannel, StoredProgram, WatchlistItem } from '../db';
+import { buildChannelProgramsMap } from '../services/searchPrograms';
 import { db } from '../db';
 import { matchesSearch } from '../utils/searchNormalization';
 import { decompressEpgDescription } from '../utils/compression';
@@ -866,15 +867,14 @@ export function ChannelPanel({
   // (drives the "Searching…" indicator in the header)
   const [searchLoading, setSearchLoading] = useState(false);
 
-  // Reset to the Channels tab whenever a new search starts (not on every
-  // keystroke, so the user's tab choice survives query refinement)
+  // Reset the tab when a new search starts (not per keystroke): All for 'both', else Channels
   const prevSearchMode = useRef(isSearchMode);
   useEffect(() => {
     if (isSearchMode && !prevSearchMode.current) {
-      setSearchTab('channels');
+      setSearchTab(searchScope === 'both' ? 'all' : 'channels');
     }
     prevSearchMode.current = isSearchMode;
-  }, [isSearchMode]);
+  }, [isSearchMode, searchScope]);
 
   // Split EPG program matches into live / upcoming groups (by channel) for the tabs
   const { liveChannels, upcomingChannels } = useMemo(() => {
@@ -1318,15 +1318,16 @@ export function ChannelPanel({
     setSearchLoading(true);
 
     async function fetchSearchData() {
-      const channelProgramsMap = new Map<string, StoredProgram[]>();
+      let channelProgramsMap = new Map<string, StoredProgram[]>();
       const programChannelsMap = new Map<string, StoredChannel>();
+      const windowPrograms: StoredProgram[] = [];
+      const matchedChannelIds: string[] = [];
 
       // Fetch programs for channel search results (batched, window-aware)
       if (searchChannels && searchChannels.length > 0) {
         const startIso = loadStart.toISOString();
         const endIso = loadEnd.toISOString();
         const streamIds = searchChannels.map((ch) => ch.stream_id);
-        for (const id of streamIds) channelProgramsMap.set(id, []);
 
         // Query programs_effective in chunks to respect SQLite variable limit
         const dbInstance = await (db as any).dbPromise;
@@ -1346,13 +1347,10 @@ export function ChannelPanel({
         }
 
         for (const prog of allPrograms) {
-          const list = channelProgramsMap.get(prog.stream_id);
-          if (list) {
-            list.push({
-              ...prog,
-              description: decompressEpgDescription(prog.description) ?? prog.description,
-            });
-          }
+          windowPrograms.push({
+            ...prog,
+            description: decompressEpgDescription(prog.description) ?? prog.description,
+          });
         }
       }
 
@@ -1373,13 +1371,17 @@ export function ChannelPanel({
               }
             }
             programChannelsMap.set(streamId, channel);
-
-            // Get all matching programs for this channel
-            const channelMatchingProgs = searchPrograms.filter(p => p.stream_id === streamId);
-            if (!channelProgramsMap.has(streamId)) channelProgramsMap.set(streamId, channelMatchingProgs);
+            matchedChannelIds.push(streamId);
           }
         }
       }
+
+      channelProgramsMap = buildChannelProgramsMap(
+        (searchChannels ?? []).map((ch) => ch.stream_id),
+        windowPrograms,
+        searchPrograms ?? [],
+        matchedChannelIds
+      );
 
       if (cancelled) return;
       setSearchChannelPrograms(channelProgramsMap);

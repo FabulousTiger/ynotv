@@ -1,10 +1,4 @@
-/**
- * probeCache.ts
- *
- * Pure helpers for the probe result cache and the probe log. No I/O and no
- * store imports; the zustand store (stores/probeCacheStore.ts) persists what
- * these functions produce.
- */
+/** Pure helpers for the probe cache and log (persisted by stores/probeCacheStore.ts). */
 
 import type { ProbeChannelResult } from './stream-probe';
 
@@ -49,6 +43,26 @@ export function cachedResultFor(
 
 export function isFresh(entry: ProbeCacheEntry, now: number, ttlMs: number = PROBE_CACHE_TTL_MS): boolean {
   return now - entry.at < ttlMs;
+}
+
+/** This run's results win; otherwise a fresh cached result (renamed to the channel) is used. */
+export function mergeEffectiveResults(
+  channels: Array<{ source_id: string; stream_id: string; name: string }>,
+  results: Record<string, ProbeChannelResult>,
+  entries: Record<string, ProbeCacheEntry>,
+  now: number
+): Record<string, ProbeChannelResult> {
+  const map: Record<string, ProbeChannelResult> = {};
+  for (const channel of channels) {
+    const done = results[channel.stream_id];
+    if (done) {
+      map[channel.stream_id] = done;
+      continue;
+    }
+    const entry = entries[cacheKey(channel.source_id, channel.stream_id)];
+    if (entry && isFresh(entry, now)) map[channel.stream_id] = { ...entry.result, name: channel.name };
+  }
+  return map;
 }
 
 /** Whole minutes since the probe, never negative. */

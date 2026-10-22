@@ -3957,7 +3957,7 @@ html[data-theme]:has(.guide-transparent-mode) .category-strip {
 /* All-tab sort selector */
 .search-sort-select {
   background: var(--surface-color, rgba(255, 255, 255, 0.06));
-  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.12));
+  border: var(--glass-border, 1px solid rgba(255, 255, 255, 0.12));
   border-radius: 14px;
   color: var(--text-secondary, rgba(255, 255, 255, 0.7));
   font-size: 0.78rem;
