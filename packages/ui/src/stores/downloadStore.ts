@@ -6,6 +6,9 @@ import { save } from '@tauri-apps/plugin-dialog';
 import i18n, { translateNativeError } from '../i18n';
 import { useSettingsStore } from './settingsStore';
 import { capComponent } from '../services/downloadNaming';
+import { MAX_DOWNLOAD_RETRIES, isRetryableError, queueKey, retryDelayMs } from '../services/downloadStats';
+
+let queueTimer: ReturnType<typeof setTimeout> | null = null;
 
 export interface DownloadItem {
   id: string;
@@ -22,6 +25,11 @@ export interface DownloadItem {
   addedAt: number;
   startedAt?: number;
   finishedAt?: number;
+  queuedAt?: number;
+  retryCount?: number;
+  /** Do not start before this time (retry back-off). */
+  notBefore?: number;
+  lastError?: string;
   userAgent?: string;
   durationSecs?: number;
   poster?: string;
@@ -352,10 +360,22 @@ export const useDownloadStore = create<DownloadState>()(
         const hasActive = list.some((d) => d.status === 'downloading');
         if (hasActive) return;
 
-        // Find the oldest queued item (at the end of the list since we prepend new items)
-        const nextItem = [...list]
-          .reverse()
-          .find((d) => d.status === 'queued');
+        // Oldest queued item first; retried items sit behind everything queued before the retry
+        const now = Date.now();
+        const queued = list.filter((d) => d.status === 'queued');
+        const nextItem = queued
+          .filter((d) => (d.notBefore ?? 0) <= now)
+          .sort((a, b) => queueKey(a) - queueKey(b))[0];
+
+        if (!nextItem && queued.length > 0) {
+          // Only back-off items are left: come back when the first one is due
+          const due = Math.min(...queued.map((d) => d.notBefore ?? 0));
+          if (queueTimer) clearTimeout(queueTimer);
+          queueTimer = setTimeout(() => {
+            queueTimer = null;
+            get().processQueue();
+          }, Math.max(500, due - now));
+        }
 
         if (nextItem) {
           let downloadUrl = nextItem.url;
@@ -422,11 +442,40 @@ export const useDownloadStore = create<DownloadState>()(
           const idx = list.findIndex((d) => d.id === payload.id);
           if (idx === -1) return state;
 
+          // Transient failure: back of the queue, try again after the others
+          const attempts = list[idx].retryCount ?? 0;
+          if (
+            payload.status === 'failed' &&
+            attempts < MAX_DOWNLOAD_RETRIES &&
+            isRetryableError(payload.error)
+          ) {
+            const now = Date.now();
+            const retried = [...list];
+            retried[idx] = {
+              ...list[idx],
+              status: 'queued',
+              progress: 0,
+              bytesWritten: 0,
+              totalBytes: null,
+              speedBytes: 0,
+              statusText: undefined,
+              error: undefined,
+              lastError: payload.error || undefined,
+              retryCount: attempts + 1,
+              queuedAt: now,
+              notBefore: now + retryDelayMs(attempts + 1),
+              startedAt: undefined,
+              finishedAt: undefined,
+            };
+            return { downloads: retried };
+          }
+
           const updated = [...list];
           const prev = updated[idx];
           const now = Date.now();
           updated[idx] = {
             ...prev,
+            notBefore: undefined,
             startedAt: prev.startedAt ?? (payload.status === 'downloading' ? now : undefined),
             finishedAt:
               payload.status === 'completed' || payload.status === 'failed' || payload.status === 'canceled'
@@ -437,7 +486,10 @@ export const useDownloadStore = create<DownloadState>()(
             bytesWritten: payload.bytes_written,
             totalBytes: payload.total_bytes,
             speedBytes: payload.speed_bytes,
-            error: payload.error || undefined,
+            error:
+              payload.error && payload.status === 'failed' && (prev.retryCount ?? 0) > 0
+                ? `${payload.error} (failed after ${prev.retryCount} ${prev.retryCount === 1 ? 'retry' : 'retries'})`
+                : payload.error || undefined,
             statusText: payload.status_text || undefined,
           };
 

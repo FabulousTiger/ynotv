@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- **Failed downloads retry once the queue is done** - Transient failures (HTTP 5xx such as 509, 429, dropped connections) go to the back of the queue and are retried after the other items, up to 2 times with a 30 s / 60 s back-off. They show as `Retry 1/2` with the last error. After that they stay `Failed` with `(failed after N retries)`. Errors like 403/404 are not retried.
 - **Direct series and movie downloads** - Downloads now use the configured SOCKS5 proxy and a connect timeout, and failures show the full cause. Episode names no longer repeat the provider title, and direct streams keep their real container (`.mkv` stays `.mkv`).
 
 ## Unreleased

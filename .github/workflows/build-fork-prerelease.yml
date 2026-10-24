@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - ccr-703b7bcb-v1dbga
+      - fork-beta
 
 jobs:
   build:

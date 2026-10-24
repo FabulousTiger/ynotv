@@ -10,6 +10,7 @@ import {
   formatEta,
   formatSpeed,
   groupDownloads,
+  MAX_DOWNLOAD_RETRIES,
   summarizeQueue,
 } from '../services/downloadStats';
 import './DownloadsView.css';
@@ -129,6 +130,11 @@ export function DownloadsView({ onPlay }: DownloadsViewProps) {
           <div className="dl-row-path" title={item.savePath}>
             {item.savePath}
           </div>
+          {item.status === 'queued' && item.retryCount ? (
+            <div className="dl-row-error">
+              Retrying after: {translateNativeError(item.lastError || '')}
+            </div>
+          ) : null}
           {item.status === 'failed' && item.error && (
             <div className="dl-row-error">
               {i18n.t('common:errorPrefix')}: {translateNativeError(item.error)}
@@ -136,7 +142,11 @@ export function DownloadsView({ onPlay }: DownloadsViewProps) {
           )}
         </div>
         <span className={`dl-badge ${item.status}`}>
-          {watched !== null && watched > 0 ? `Done · watched ${watched}%` : statusLabel(item)}
+          {watched !== null && watched > 0
+            ? `Done · watched ${watched}%`
+            : item.status === 'queued' && item.retryCount
+            ? `Retry ${item.retryCount}/${MAX_DOWNLOAD_RETRIES}`
+            : statusLabel(item)}
         </span>
         <div className="dl-row-actions">
           {item.status === 'queued' && (

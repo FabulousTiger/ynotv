@@ -4,6 +4,8 @@ import {
   estimateEtaSeconds,
   formatEta,
   groupDownloads,
+  isRetryableError,
+  retryDelayMs,
   summarizeQueue,
   type StatsItem,
 } from '../downloadStats';
@@ -91,5 +93,32 @@ describe('formatEta', () => {
     expect(formatEta(12 * 60)).toBe('~12 min');
     expect(formatEta(3900)).toBe('~1 h 05 min');
     expect(formatEta(null)).toBe('--');
+  });
+});
+
+describe('retries', () => {
+  it('retries server and network errors only', () => {
+    expect(isRetryableError('Server returned HTTP status 509 <unknown status code>')).toBe(true);
+    expect(isRetryableError('Server returned HTTP status 503 Service Unavailable')).toBe(true);
+    expect(isRetryableError('Server returned HTTP status 429 Too Many Requests')).toBe(true);
+    expect(isRetryableError('HTTP request failed: error sending request: connection reset')).toBe(true);
+    expect(isRetryableError('Server returned HTTP status 404 Not Found')).toBe(false);
+    expect(isRetryableError('Server returned HTTP status 403 Forbidden')).toBe(false);
+    expect(isRetryableError('Failed to open output file: access denied')).toBe(false);
+    expect(isRetryableError(null)).toBe(false);
+  });
+
+  it('backs off longer each attempt', () => {
+    expect(retryDelayMs(1)).toBe(30_000);
+    expect(retryDelayMs(2)).toBe(60_000);
+  });
+
+  it('puts a retried item behind everything queued before the retry', () => {
+    const list = [
+      item({ id: 'later', addedAt: 50 }),
+      item({ id: 'retried', addedAt: 1, queuedAt: 100 }),
+      item({ id: 'earlier', addedAt: 10 }),
+    ];
+    expect(groupDownloads(list).queue.map((d) => d.id)).toEqual(['earlier', 'later', 'retried']);
   });
 });

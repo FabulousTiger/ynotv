@@ -15,6 +15,8 @@ export interface StatsItem {
   addedAt: number;
   startedAt?: number;
   finishedAt?: number;
+  /** Set when a retry sends the item to the back of the queue. */
+  queuedAt?: number;
 }
 
 export interface GroupedDownloads<T extends StatsItem> {
@@ -27,12 +29,15 @@ export interface GroupedDownloads<T extends StatsItem> {
 }
 
 /** The store prepends new items, so the oldest queued item is the last in the array. */
+export const queueKey = (d: Pick<StatsItem, 'addedAt' | 'queuedAt'>): number => d.queuedAt ?? d.addedAt;
+
 export function groupDownloads<T extends StatsItem>(downloads: readonly T[]): GroupedDownloads<T> {
   const byAddedAsc = (a: T, b: T) => a.addedAt - b.addedAt;
+  const byQueueKey = (a: T, b: T) => queueKey(a) - queueKey(b);
   const doneAt = (d: T) => d.finishedAt ?? d.startedAt ?? d.addedAt;
   return {
     active: downloads.filter((d) => d.status === 'downloading').sort(byAddedAsc),
-    queue: downloads.filter((d) => d.status === 'queued').sort(byAddedAsc),
+    queue: downloads.filter((d) => d.status === 'queued').sort(byQueueKey),
     paused: downloads.filter((d) => d.status === 'paused').sort(byAddedAsc),
     history: downloads
       .filter((d) => d.status === 'completed' || d.status === 'failed' || d.status === 'canceled')
@@ -128,4 +133,19 @@ export function formatSpeed(bytesPerSec: number): string {
   if (!bytesPerSec) return '0 KB/s';
   const kb = bytesPerSec / 1024;
   return kb < 1024 ? `${kb.toFixed(1)} KB/s` : `${(kb / 1024).toFixed(2)} MB/s`;
+}
+
+export const MAX_DOWNLOAD_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 30_000;
+
+// Server hiccups and dropped connections are worth another try; auth, not-found and local write errors are not
+const RETRYABLE = /HTTP status (?:5\d\d|429|408)\b|HTTP request failed|Network error|timed out|timeout|connection (?:reset|closed|refused)|yt-dlp process failed/i;
+
+export function isRetryableError(error?: string | null): boolean {
+  return !!error && RETRYABLE.test(error);
+}
+
+/** Wait before retry number `attempt` (1-based): 30 s, 60 s, ... */
+export function retryDelayMs(attempt: number): number {
+  return RETRY_BASE_DELAY_MS * Math.max(1, attempt);
 }
