@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.5.8-beta.1 (fork build)
+
+### Fixed
+
+- **Direct series and movie downloads** - Downloads now use the configured SOCKS5 proxy and a connect timeout, and failures show the full cause. Episode names no longer repeat the provider title, and direct streams keep their real container (`.mkv` stays `.mkv`).
+
 ## Unreleased
 
 ### Added

@@ -7852,7 +7852,7 @@ dependencies = [
 
 [[package]]
 name = "ynotv"
-version = "2.5.7"
+version = "2.5.8-beta.1"
 dependencies = [
  "anyhow",
  "axum",
