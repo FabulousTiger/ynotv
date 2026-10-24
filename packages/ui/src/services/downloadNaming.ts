@@ -116,10 +116,23 @@ export interface SeriesPathInput {
   organizeByFolder?: boolean;
 }
 
+const EPISODE_TAG_PREFIX = /^.*?\bS\d+E\d+\s*-\s*/i;
+
+/** Some providers store the whole "EN - Show (2019) (US) - S06E09 - Title" string as the episode title. */
+export function cleanEpisodeTitle(raw?: string | null): string {
+  let t = (raw ?? '').trim();
+  const afterFirst = t.replace(PREFIX, '');
+  if (afterFirst !== t) {
+    t = afterFirst.replace(SECOND_PREFIX, '');
+  }
+  t = t.replace(EPISODE_TAG_PREFIX, '');
+  return sanitizeSegment(t);
+}
+
 /** `<root>\<Dest>\<Show (Year)>\Season 01\<Show (Year)> - S01E02 - <Episode Title>.<ext>` */
 export function buildSeriesEpisodePath(input: SeriesPathInput): string {
   const show = cleanTitle(input.showTitle, input.showYear);
-  const epTitle = sanitizeSegment(input.episodeTitle ?? '');
+  const epTitle = cleanEpisodeTitle(input.episodeTitle);
   const tag = `S${pad2(input.season)}E${pad2(input.episode)}`;
   const stem = capComponent(epTitle ? `${show} - ${tag} - ${epTitle}` : `${show} - ${tag}`);
   const root = resolveDownloadsRoot(input.root);
@@ -159,7 +172,13 @@ export function buildSeriesFolderPreview(
   return `${joinWin(base, capComponent(cleanTitle(showTitle, showYear)), seasonLabel)}\\`;
 }
 
-/** Container for the download: HLS streams are remuxed to mkv, everything else is mp4. */
-export function downloadExtension(url: string): 'mkv' | 'mp4' {
-  return url.includes('.m3u8') || url.includes('/mono.m3u8') ? 'mkv' : 'mp4';
+const DIRECT_EXTENSIONS = ['mkv', 'mp4', 'avi', 'mov', 'm4v', 'ts'] as const;
+export type DownloadExtension = (typeof DIRECT_EXTENSIONS)[number];
+
+/** HLS streams are remuxed to mkv; direct streams keep the container from the URL, defaulting to mp4. */
+export function downloadExtension(url: string): DownloadExtension {
+  if (url.includes('.m3u8') || url.includes('/mono.m3u8')) return 'mkv';
+  const m = url.split(/[?#]/)[0].match(/\.([a-z0-9]{2,4})$/i);
+  const ext = m?.[1].toLowerCase();
+  return (DIRECT_EXTENSIONS as readonly string[]).includes(ext ?? '') ? (ext as DownloadExtension) : 'mp4';
 }

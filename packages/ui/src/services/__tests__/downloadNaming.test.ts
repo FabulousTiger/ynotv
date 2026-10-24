@@ -179,4 +179,26 @@ describe('root and destination helpers', () => {
     expect(downloadExtension('http://x/stream.m3u8?a=1')).toBe('mkv');
     expect(downloadExtension('http://x/movie.mp4')).toBe('mp4');
   });
+
+  it('keeps the container of direct streams', () => {
+    expect(downloadExtension('http://x/series/u/p/2090912.mkv')).toBe('mkv');
+    expect(downloadExtension('http://x/a/b.AVI?token=1')).toBe('avi');
+    expect(downloadExtension('http://x/a/b/123')).toBe('mp4');
+  });
+
+  it('strips the echoed provider title from episode titles', () => {
+    expect(
+      buildSeriesEpisodePath({
+        root: 'H:\\Downloads\\ynoTV',
+        destination: 'Series',
+        showTitle: 'EN - Game Changer (2019) (US)',
+        season: 6,
+        episode: 9,
+        episodeTitle: 'EN - Game Changer (2019) (US) - S06E09 - Ratfish (2)',
+        ext: 'mkv',
+      })
+    ).toBe(
+      'H:\\Downloads\\ynoTV\\Series\\Game Changer (2019)\\Season 06\\Game Changer (2019) - S06E09 - Ratfish (2).mkv'
+    );
+  });
 });

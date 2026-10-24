@@ -4678,8 +4678,14 @@ async fn do_download(
         }
     } else {
         let ua = user_agent.unwrap_or_else(|| "VLC/3.0.18 LibVLC/3.0.18".to_string());
-        let client = reqwest::Client::builder()
+        let mut client_builder = reqwest::Client::builder()
             .user_agent(ua)
+            .connect_timeout(std::time::Duration::from_secs(20));
+        // Same SOCKS5 proxy the player uses, so hosts only reachable through it work
+        if let Some(proxy) = get_configured_proxy(&app_handle) {
+            client_builder = client_builder.proxy(proxy);
+        }
+        let client = client_builder
             .build()
             .map_err(|e| DownloadError::Failed(format!("Failed to build client: {}", e)))?;
 
@@ -4711,7 +4717,17 @@ async fn do_download(
             open_options.write(true).create(true).truncate(true);
         }
 
-        let res = req.send().await.map_err(|e| DownloadError::Failed(format!("HTTP request failed: {}", e)))?;
+        let res = req.send().await.map_err(|e| {
+            // reqwest's Display hides the cause (DNS, connect, TLS); walk the chain
+            let mut msg = format!("HTTP request failed: {}", e);
+            let mut src = std::error::Error::source(&e);
+            while let Some(s) = src {
+                msg.push_str(&format!(": {}", s));
+                src = s.source();
+            }
+            warn!("[Downloader] {}", msg);
+            DownloadError::Failed(msg)
+        })?;
         if !res.status().is_success() {
             return Err(DownloadError::Failed(format!("Server returned HTTP status {}", res.status())));
         }
