@@ -1,0 +1,75 @@
+name: Build Fork Beta
+
+# Manual build of the fork: pick a branch in "Run workflow" and the version
+# from tauri.conf.json becomes the prerelease tag (e.g. v2.5.8-beta.1).
+# Also runs on pushes to the branch below so a fix can be built immediately.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ccr-703b7bcb-v1dbga
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: echo "tag=v$(node -p "require('./packages/app/src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Install 7z (Windows)
+        run: choco install 7zip -y
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download MPV (Tauri Sidecar)
+        run: bash scripts/download-mpv-tauri.sh
+        shell: bash
+        continue-on-error: true
+
+      - name: Download FFmpeg (Tauri Sidecar)
+        run: |
+          cd packages/app
+          node scripts/download-ffmpeg.js
+        shell: bash
+        continue-on-error: true
+
+      - name: Setup libmpv (Windows)
+        run: |
+          powershell -ExecutionPolicy Bypass -File packages/app/src-tauri/setup-libmpv.ps1
+          echo "LIBMPV_PATH=$GITHUB_WORKSPACE/packages/app/src-tauri/libmpv" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          VITE_TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+          VITE_OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
+        with:
+          tagName: ${{ steps.version.outputs.tag }}
+          releaseName: 'Fork ${{ steps.version.outputs.tag }}'
+          releaseBody: 'Fork beta build. See CHANGELOG.md on the branch for changes.'
+          releaseCommitish: ${{ github.sha }}
+          prerelease: true
