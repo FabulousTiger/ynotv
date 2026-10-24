@@ -1,0 +1,75 @@
+name: Build Fork Prerelease
+
+# Beta build: version is <base from tauri.conf.json>-beta.<run number>, published
+# as a GitHub prerelease (e.g. v2.5.8-beta.7). Runs on pushes to the branch below
+# and by hand via "Run workflow" (once this file is on the default branch).
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ccr-703b7bcb-v1dbga
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: node .github/scripts/set-version.mjs "base-beta.${{ github.run_number }}"
+        shell: bash
+
+      - name: Install 7z (Windows)
+        run: choco install 7zip -y
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download MPV (Tauri Sidecar)
+        run: bash scripts/download-mpv-tauri.sh
+        shell: bash
+        continue-on-error: true
+
+      - name: Download FFmpeg (Tauri Sidecar)
+        run: |
+          cd packages/app
+          node scripts/download-ffmpeg.js
+        shell: bash
+        continue-on-error: true
+
+      - name: Setup libmpv (Windows)
+        run: |
+          powershell -ExecutionPolicy Bypass -File packages/app/src-tauri/setup-libmpv.ps1
+          echo "LIBMPV_PATH=$GITHUB_WORKSPACE/packages/app/src-tauri/libmpv" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Build Tauri App
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+          VITE_TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+          VITE_OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
+        with:
+          tagName: ${{ steps.version.outputs.tag }}
+          releaseName: 'Fork ${{ steps.version.outputs.tag }}'
+          releaseBody: 'Fork prerelease build from ${{ github.ref_name }} (${{ github.sha }}). See CHANGELOG.md on the branch.'
+          releaseCommitish: ${{ github.sha }}
+          prerelease: true

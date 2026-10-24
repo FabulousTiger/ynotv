@@ -1,13 +1,15 @@
-name: Build Fork Beta
+name: Build Fork Release
 
-# Manual build of the fork: pick a branch in "Run workflow" and the version
-# from tauri.conf.json becomes the prerelease tag (e.g. v2.5.8-beta.1).
-# Also runs on pushes to the branch below so a fix can be built immediately.
+# Stable build: version is the base from tauri.conf.json without any -beta suffix
+# (2.5.8-beta.1 -> v2.5.8), or the optional input below. Published as a normal
+# (non-prerelease) GitHub release. Manual only: pick the branch in "Run workflow".
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - ccr-703b7bcb-v1dbga
+    inputs:
+      version:
+        description: 'Version to release, e.g. 2.5.8 (blank = base of tauri.conf.json)'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -19,9 +21,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Read version
+      - name: Set version
         id: version
-        run: echo "tag=v$(node -p "require('./packages/app/src-tauri/tauri.conf.json').version")" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: node .github/scripts/set-version.mjs "${INPUT_VERSION:-base}"
         shell: bash
 
       - name: Install 7z (Windows)
@@ -70,6 +74,6 @@ jobs:
         with:
           tagName: ${{ steps.version.outputs.tag }}
           releaseName: 'Fork ${{ steps.version.outputs.tag }}'
-          releaseBody: 'Fork beta build. See CHANGELOG.md on the branch for changes.'
+          releaseBody: 'Fork release build from ${{ github.ref_name }} (${{ github.sha }}). See CHANGELOG.md on the branch.'
           releaseCommitish: ${{ github.sha }}
-          prerelease: true
+          prerelease: false
