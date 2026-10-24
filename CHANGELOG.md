@@ -2,6 +2,10 @@
 
 ## v2.5.8-beta.1 (fork build)
 
+### Changed
+
+- **Downloads tab redesigned** - A `Now downloading` panel at the top shows the active item with a progress bar, size, speed and time left, and a summary line shows `N of M`, how many are left and the estimated time for the whole queue. Below it, `Up next` lists the queue in the order it will run, then `Paused`, then a collapsible `History` with the newest first. Time left uses bytes and speed when the size is known, otherwise elapsed time and percent; the queue estimate uses the average time of recently finished items.
+
 ### Fixed
 
 - **Direct series and movie downloads** - Downloads now use the configured SOCKS5 proxy and a connect timeout, and failures show the full cause. Episode names no longer repeat the provider title, and direct streams keep their real container (`.mkv` stays `.mkv`).

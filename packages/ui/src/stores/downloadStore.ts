@@ -20,6 +20,8 @@ export interface DownloadItem {
   error?: string;
   statusText?: string;
   addedAt: number;
+  startedAt?: number;
+  finishedAt?: number;
   userAgent?: string;
   durationSecs?: number;
   poster?: string;
@@ -421,8 +423,15 @@ export const useDownloadStore = create<DownloadState>()(
           if (idx === -1) return state;
 
           const updated = [...list];
+          const prev = updated[idx];
+          const now = Date.now();
           updated[idx] = {
-            ...updated[idx],
+            ...prev,
+            startedAt: prev.startedAt ?? (payload.status === 'downloading' ? now : undefined),
+            finishedAt:
+              payload.status === 'completed' || payload.status === 'failed' || payload.status === 'canceled'
+                ? now
+                : undefined,
             status: payload.status,
             progress: payload.progress,
             bytesWritten: payload.bytes_written,
