@@ -81,6 +81,7 @@ export function DownloadsView({ onPlay }: DownloadsViewProps) {
   const resumeDownload = useDownloadStore((s) => s.resumeDownload);
   const removeDownload = useDownloadStore((s) => s.removeDownload);
   const clearCompleted = useDownloadStore((s) => s.clearCompleted);
+  const clearQueue = useDownloadStore((s) => s.clearQueue);
 
   const hasActive = downloads.some((d) => d.status === 'downloading');
   useEffect(() => {
@@ -277,6 +278,17 @@ export function DownloadsView({ onPlay }: DownloadsViewProps) {
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
         />
+
+        {downloads.some((d) => d.status === 'queued' || d.status === 'paused' || d.status === 'downloading') && (
+          <button
+            className="dvr-btn-clear"
+            onClick={() => {
+              if (confirm('Cancel the active download and clear all queued/paused items?')) clearQueue();
+            }}
+          >
+            Clear queue
+          </button>
+        )}
 
         {hasFinished && (
           <button className="dvr-btn-clear" onClick={clearCompleted}>

@@ -73,6 +73,7 @@ interface DownloadState {
   resumeDownload: (id: string) => Promise<void>;
   removeDownload: (id: string) => void;
   clearCompleted: () => void;
+  clearQueue: () => Promise<void>;
   processQueue: () => Promise<void>;
   updateDownloadProgress: (payload: {
     id: string;
@@ -220,6 +221,8 @@ export const useDownloadStore = create<DownloadState>()(
 
           set((state) => ({ downloads: [newItem, ...(state.downloads || [])] }));
 
+          console.log(`[DownloadStore] Queued id=${id} title='${title}' status=${status} savePath=${savePath} sourceId=${sourceId ?? '-'} urlLen=${url?.length ?? 0}`);
+
           // 4. If no active download is running, invoke Rust backend immediately
           if (!active) {
             await invoke('download_media', {
@@ -354,6 +357,32 @@ export const useDownloadStore = create<DownloadState>()(
         }));
       },
 
+      clearQueue: async () => {
+        // Drop everything that is waiting/paused, and cancel whatever is running.
+        const list = get().downloads || [];
+        console.log(`[DownloadStore] Clearing queue: ${list.filter((d) => d.status === 'queued' || d.status === 'paused' || d.status === 'downloading').length} items`);
+        set((state) => ({
+          downloads: (state.downloads || []).filter((d) => d.status !== 'queued' && d.status !== 'paused'),
+        }));
+        for (const d of list.filter((x) => x.status === 'paused')) {
+          try {
+            await invoke('delete_download_file', { path: d.savePath });
+          } catch (err) {
+            console.warn('[DownloadStore] Failed to delete partial file for', d.title, err);
+          }
+        }
+        for (const d of list.filter((x) => x.status === 'downloading')) {
+          try {
+            await invoke('cancel_download', { id: d.id });
+          } catch (err) {
+            console.warn('[DownloadStore] Backend cancel failed for', d.title, err);
+            set((state) => ({
+              downloads: (state.downloads || []).filter((x) => x.id !== d.id),
+            }));
+          }
+        }
+      },
+
       processQueue: async () => {
         const list = get().downloads || [];
         // Check if there is an active downloading item
@@ -390,7 +419,7 @@ export const useDownloadStore = create<DownloadState>()(
               if (resolved.userAgent) {
                 userAgent = resolved.userAgent;
               }
-              console.log('[DownloadStore] Re-resolved URL for queued download:', nextItem.title, '->', downloadUrl);
+              console.log(`[DownloadStore] Re-resolved URL for '${nextItem.title}' (urlLen=${downloadUrl?.length ?? 0}, ua=${userAgent ?? '-'})`);
             } catch (err) {
               console.warn('[DownloadStore] Failed to re-resolve URL before downloading, using original URL:', err);
             }
@@ -416,7 +445,7 @@ export const useDownloadStore = create<DownloadState>()(
               }
             });
           } catch (error: any) {
-            console.error('[DownloadStore] Failed to start queued download:', error);
+            console.error(`[DownloadStore] Failed to start queued download '${nextItem.title}':`, error);
             set((state) => ({
               downloads: (state.downloads || []).map((d) =>
                 d.id === nextItem.id
@@ -437,6 +466,9 @@ export const useDownloadStore = create<DownloadState>()(
       },
 
       updateDownloadProgress: (payload) => {
+        if (payload.status !== 'downloading') {
+          console.log(`[DownloadStore] ${payload.status} '${payload.title}' bytes=${payload.bytes_written} err=${payload.error ?? '-'}`);
+        }
         set((state) => {
           const list = state.downloads || [];
           const idx = list.findIndex((d) => d.id === payload.id);

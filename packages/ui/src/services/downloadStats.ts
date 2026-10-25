@@ -139,7 +139,7 @@ export const MAX_DOWNLOAD_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 30_000;
 
 // Server hiccups and dropped connections are worth another try; auth, not-found and local write errors are not
-const RETRYABLE = /HTTP status (?:5\d\d|429|408)\b|HTTP request failed|Network error|timed out|timeout|connection (?:reset|closed|refused)|yt-dlp process failed/i;
+const RETRYABLE = /HTTP status (?:5\d\d|429|408)\b|HTTP request failed|Network error|timed out|timeout|connection (?:reset|closed|refused)|yt-dlp process failed|empty (?:\(0 KB\) file|response)/i;
 
 export function isRetryableError(error?: string | null): boolean {
   return !!error && RETRYABLE.test(error);
