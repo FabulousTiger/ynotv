@@ -1380,6 +1380,7 @@ function DownloadsTab({ onPlay }: DownloadsTabProps) {
     const resumeDownload = useDownloadStore((s) => s.resumeDownload);
     const removeDownload = useDownloadStore((s) => s.removeDownload);
     const clearCompleted = useDownloadStore((s) => s.clearCompleted);
+    const clearQueue = useDownloadStore((s) => s.clearQueue);
 
     const activeDownloads = downloads.filter((d) => d.status === 'downloading');
     const queuedDownloads = downloads.filter((d) => d.status === 'queued');
@@ -1508,6 +1509,17 @@ function DownloadsTab({ onPlay }: DownloadsTabProps) {
                         />
                         Show Posters
                     </label>
+
+                    {downloads.some((d) => d.status === 'queued' || d.status === 'paused' || d.status === 'downloading') && (
+                        <button
+                            className="dvr-btn-clear"
+                            onClick={() => {
+                                if (confirm('Cancel the active download and clear all queued/paused items?')) clearQueue();
+                            }}
+                        >
+                            Clear Queue
+                        </button>
+                    )}
 
                     {downloads.some((d) => d.status !== 'downloading' && d.status !== 'queued') && (
                         <button className="dvr-btn-clear" onClick={clearCompleted}>

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Runtime, Manager};
-use log::{debug, info, warn, error};
+use log::{debug, info, warn, error, trace};
 use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 
@@ -4161,6 +4161,11 @@ async fn download_media(
 
     let extract_subtitles = request.extract_subtitles;
 
+    info!("[Downloader] Starting id={} title='{}' url={} ua={:?} duration={:?}", id, title, url, user_agent, duration_secs);
+    if url.trim().is_empty() {
+        return Err("Download URL is empty".to_string());
+    }
+
     let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(None);
     ACTIVE_DOWNLOADS.lock().insert(id.clone(), cancel_tx);
 
@@ -4194,6 +4199,26 @@ async fn download_media(
         ).await;
 
         ACTIVE_DOWNLOADS.lock().remove(&id);
+
+        // A "successful" download that produced an empty/missing file is a failure
+        // (e.g. yt-dlp --ignore-errors exiting 0, or the server returning an empty body).
+        let res = match res {
+            Ok(()) => match tokio::fs::metadata(&active_save_path).await {
+                Ok(m) if m.len() > 0 => {
+                    info!("[Downloader] '{}' finished: {} bytes at {}", title, m.len(), active_save_path);
+                    Ok(())
+                }
+                Ok(_) => {
+                    error!("[Downloader] '{}' finished but output file is 0 bytes: {}", title, active_save_path);
+                    Err(DownloadError::Failed("Download produced an empty (0 KB) file. The server may have returned no data or an expired link.".to_string()))
+                }
+                Err(e) => {
+                    error!("[Downloader] '{}' finished but output file missing ({}): {}", title, e, active_save_path);
+                    Err(DownloadError::Failed(format!("Download produced no file: {}", e)))
+                }
+            },
+            other => other,
+        };
 
         let final_event = match res {
             Ok(()) => {
@@ -4466,6 +4491,11 @@ async fn do_download(
                     line_res = reader.next_line() => {
                         match line_res {
                             Ok(Some(line)) => {
+                                if line.contains("ERROR") || line.contains("WARNING") {
+                                    warn!("[yt-dlp] {}", line);
+                                } else {
+                                    trace!("[yt-dlp] {}", line);
+                                }
                                 if last_emit.elapsed() >= std::time::Duration::from_millis(500) {
                                     let (progress_pct, speed, total) = parse_ytdlp_line(&line);
                                     
@@ -4531,10 +4561,11 @@ async fn do_download(
             }
 
             let status = child.wait().await.map_err(|e| DownloadError::Failed(format!("yt-dlp wait error: {}", e)))?;
+            info!("[Downloader] yt-dlp exited with {} for '{}'", status, title);
             if status.success() {
                 return Ok(());
             } else {
-                return Err(DownloadError::Failed("yt-dlp process failed".to_string()));
+                return Err(DownloadError::Failed(format!("yt-dlp process failed ({})", status)));
             }
         }
 
@@ -4712,8 +4743,25 @@ async fn do_download(
         }
 
         let res = req.send().await.map_err(|e| DownloadError::Failed(format!("HTTP request failed: {}", e)))?;
+        let content_type = res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        info!(
+            "[Downloader] '{}' HTTP {} content-type='{}' content-length={:?} final-url={}",
+            title, res.status(), content_type, res.content_length(), res.url()
+        );
         if !res.status().is_success() {
             return Err(DownloadError::Failed(format!("Server returned HTTP status {}", res.status())));
+        }
+        if res.content_length() == Some(0) {
+            return Err(DownloadError::Failed("Server returned an empty response (Content-Length: 0)".to_string()));
+        }
+        let ct_lower = content_type.to_lowercase();
+        if ct_lower.starts_with("text/") || ct_lower.contains("json") {
+            return Err(DownloadError::Failed(format!("Server returned '{}' instead of a video (expired/invalid link?)", content_type)));
         }
 
         let is_partial = res.status() == reqwest::StatusCode::PARTIAL_CONTENT;
