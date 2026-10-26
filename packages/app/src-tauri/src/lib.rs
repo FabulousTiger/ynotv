@@ -4145,6 +4145,25 @@ async fn post_process_mkv(
     Ok(())
 }
 
+/// Mask Xtream credentials (`/series|movie|live/<user>/<pass>/...`) and query strings for logging.
+fn redact_url(url: &str) -> String {
+    let base = url.split('?').next().unwrap_or(url);
+    let parts: Vec<&str> = base.split('/').collect();
+    let mut out: Vec<String> = Vec::with_capacity(parts.len());
+    let mut i = 0;
+    while i < parts.len() {
+        out.push(parts[i].to_string());
+        if matches!(parts[i], "series" | "movie" | "live" | "timeshift") && i + 2 < parts.len() {
+            out.push("<user>".to_string());
+            out.push("<pass>".to_string());
+            i += 3;
+            continue;
+        }
+        i += 1;
+    }
+    out.join("/")
+}
+
 #[tauri::command]
 async fn download_media(
     app_handle: tauri::AppHandle,
@@ -4161,7 +4180,7 @@ async fn download_media(
 
     let extract_subtitles = request.extract_subtitles;
 
-    info!("[Downloader] Starting id={} title='{}' url={} ua={:?} duration={:?}", id, title, url, user_agent, duration_secs);
+    info!("[Downloader] Starting id={} title='{}' url={} ua={:?} duration={:?}", id, title, redact_url(&url), user_agent, duration_secs);
     if url.trim().is_empty() {
         return Err("Download URL is empty".to_string());
     }
@@ -4767,7 +4786,7 @@ async fn do_download(
             .to_string();
         info!(
             "[Downloader] '{}' HTTP {} content-type='{}' content-length={:?} final-url={}",
-            title, res.status(), content_type, res.content_length(), res.url()
+            title, res.status(), content_type, res.content_length(), redact_url(res.url().as_str())
         );
         if !res.status().is_success() {
             return Err(DownloadError::Failed(format!("Server returned HTTP status {}", res.status())));
@@ -4777,7 +4796,32 @@ async fn do_download(
         }
         let ct_lower = content_type.to_lowercase();
         if ct_lower.starts_with("text/") || ct_lower.contains("json") {
-            return Err(DownloadError::Failed(format!("Server returned '{}' instead of a video (expired/invalid link?)", content_type)));
+            // Surface what the server actually said (connection limit, block page, login redirect...).
+            let final_url = redact_url(res.url().as_str());
+            let mut res = res;
+            let body = match res.chunk().await {
+                Ok(Some(b)) => String::from_utf8_lossy(&b[..b.len().min(4096)]).to_string(),
+                _ => String::new(),
+            };
+            let mut in_tag = false;
+            let text: String = body
+                .chars()
+                .filter(|c| match *c {
+                    '<' => { in_tag = true; false }
+                    '>' => { in_tag = false; false }
+                    _ => !in_tag,
+                })
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let snippet: String = text.chars().take(200).collect();
+            warn!("[Downloader] '{}' got non-video response from {} ({}): {}", title, final_url, content_type, snippet);
+            return Err(DownloadError::Failed(format!(
+                "Server returned '{}' instead of a video: {}",
+                content_type,
+                if snippet.is_empty() { "(empty page)" } else { snippet.as_str() }
+            )));
         }
 
         let is_partial = res.status() == reqwest::StatusCode::PARTIAL_CONTENT;
