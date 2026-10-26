@@ -4439,6 +4439,163 @@ fn parse_ytdlp_line(line: &str) -> (Option<f64>, Option<u64>, Option<u64>) {
     (progress, speed_bytes, total_bytes)
 }
 
+/// Download via FFmpeg (stream copy). Used for HLS without yt-dlp, and as a fallback when a direct
+/// HTTP request is answered with an HTML page that the player (libavformat) would still be served video for.
+async fn ffmpeg_download(
+    app_handle: tauri::AppHandle,
+    id: String,
+    title: String,
+    url: String,
+    save_path: String,
+    user_agent: Option<String>,
+    duration_secs: Option<u64>,
+    cancel_rx: &mut tokio::sync::watch::Receiver<Option<DownloadControl>>,
+) -> Result<(), DownloadError> {
+    use tokio::io::AsyncBufReadExt;
+
+    // Fallback to FFmpeg if yt-dlp is not available
+    let ffmpeg_path = match crate::dvr::recorder::find_ffmpeg(&app_handle) {
+        Ok(p) => p,
+        Err(e) => return Err(DownloadError::Failed(format!("FFmpeg not found: {}", e))),
+    };
+
+    let mut cmd = tokio::process::Command::new(ffmpeg_path);
+    
+    let ua = user_agent.as_deref().unwrap_or("");
+    let effective_ua = if ua.trim().is_empty() { "VLC/3.0.18 LibVLC/3.0.18" } else { ua };
+    cmd.arg("-user_agent").arg(effective_ua);
+    cmd.arg("-stats");
+
+    cmd.arg("-i").arg(&url)
+       .arg("-c").arg("copy")
+       .arg("-y")
+       .arg(&save_path)
+       .stdout(std::process::Stdio::piped())
+       .stderr(std::process::Stdio::piped());
+
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    let mut child = cmd.spawn().map_err(|e| DownloadError::Failed(format!("Failed to spawn FFmpeg: {}", e)))?;
+    let stderr = child.stderr.take().ok_or_else(|| DownloadError::Failed("Failed to open FFmpeg stderr".to_string()))?;
+    let mut reader = tokio::io::BufReader::new(stderr).lines();
+
+    let start_time = std::time::Instant::now();
+    let mut last_emit = std::time::Instant::now();
+    let mut resolved_duration_secs = duration_secs;
+    let mut last_progress = 0.0;
+    let mut last_bytes = 0u64;
+
+    loop {
+        tokio::select! {
+            line_res = reader.next_line() => {
+                match line_res {
+                    Ok(Some(line)) => {
+                        if line.contains("rror") || line.contains("Invalid") || line.contains("HTTP") {
+                            warn!("[ffmpeg] {}", line.split(' ').map(|w| if w.contains("://") { redact_url(w) } else { w.to_string() }).collect::<Vec<_>>().join(" "));
+                        }
+                        // Try to parse "Duration: hh:mm:ss" if we don't have a duration yet
+                        if resolved_duration_secs.is_none() || resolved_duration_secs == Some(0) {
+                            if let Some(pos) = line.find("Duration: ") {
+                                let dur_part = &line[pos + 10..];
+                                let val_str = dur_part.split(',').next().unwrap_or("").trim();
+                                let parts: Vec<&str> = val_str.split(':').collect();
+                                if parts.len() == 3 {
+                                    if let (Ok(h), Ok(m), Ok(s)) = (
+                                        parts[0].parse::<f64>(),
+                                        parts[1].parse::<f64>(),
+                                        parts[2].parse::<f64>(),
+                                    ) {
+                                        let total_secs = h * 3600.0 + m * 60.0 + s;
+                                        if total_secs > 0.0 {
+                                            resolved_duration_secs = Some(total_secs as u64);
+                                            debug!("[Downloader] Parsed duration from FFmpeg: {}s", total_secs);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if last_emit.elapsed() >= std::time::Duration::from_millis(500) {
+                            let (secs, size_bytes) = parse_ffmpeg_line(&line);
+                            
+                            let progress = if let (Some(s), Some(dur)) = (secs, resolved_duration_secs) {
+                                if dur > 0 {
+                                    ((s / dur as f64) * 100.0).min(100.0).max(0.0)
+                                } else {
+                                    0.0
+                                }
+                            } else {
+                                0.0
+                            };
+
+                            let speed_bytes = if start_time.elapsed().as_secs_f64() > 0.0 {
+                                (size_bytes.unwrap_or(0) as f64 / start_time.elapsed().as_secs_f64()) as u64
+                            } else {
+                                0
+                            };
+
+                             let display_progress = if save_path.ends_with(".temp.ts") {
+                                progress * 0.98
+                            } else {
+                                progress
+                            };
+                            last_progress = progress;
+                            last_bytes = size_bytes.unwrap_or(0);
+
+                            let event = DownloadProgressEvent {
+                                id: id.clone(),
+                                title: title.clone(),
+                                status: "downloading".to_string(),
+                                progress: display_progress,
+                                bytes_written: size_bytes.unwrap_or(0),
+                                total_bytes: None,
+                                speed_bytes,
+                                file_path: save_path.clone(),
+                                error: None,
+                                status_text: None,
+                            };
+                            let _ = app_handle.emit("download:event", event);
+                            last_emit = std::time::Instant::now();
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+            _ = cancel_rx.changed() => {
+                let ctrl = { *cancel_rx.borrow() };
+                if let Some(c) = ctrl {
+                    let _ = child.kill().await;
+                    match c {
+                        DownloadControl::Cancel => {
+                            return Err(DownloadError::Canceled {
+                                bytes_written: last_bytes,
+                                total_bytes: None,
+                                progress: last_progress,
+                            });
+                        }
+                        DownloadControl::Pause => {
+                            return Err(DownloadError::Paused {
+                                bytes_written: last_bytes,
+                                total_bytes: None,
+                                progress: last_progress,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let status = child.wait().await.map_err(|e| DownloadError::Failed(format!("FFmpeg wait error: {}", e)))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(DownloadError::Failed("FFmpeg process failed".to_string()))
+    }
+}
+
 async fn do_download(
     app_handle: tauri::AppHandle,
     id: String,
@@ -4589,145 +4746,9 @@ async fn do_download(
         }
 
         // Fallback to FFmpeg if yt-dlp is not available
-        let ffmpeg_path = match crate::dvr::recorder::find_ffmpeg(&app_handle) {
-            Ok(p) => p,
-            Err(e) => return Err(DownloadError::Failed(format!("FFmpeg not found: {}", e))),
-        };
-
-        let mut cmd = tokio::process::Command::new(ffmpeg_path);
-        
-        let ua = user_agent.as_deref().unwrap_or("");
-        let effective_ua = if ua.trim().is_empty() { "VLC/3.0.18 LibVLC/3.0.18" } else { ua };
-        cmd.arg("-user_agent").arg(effective_ua);
-        cmd.arg("-stats");
-
-        cmd.arg("-i").arg(&url)
-           .arg("-c").arg("copy")
-           .arg("-y")
-           .arg(&save_path)
-           .stdout(std::process::Stdio::piped())
-           .stderr(std::process::Stdio::piped());
-
-        #[cfg(windows)]
-        cmd.creation_flags(0x08000000);
-
-        let mut child = cmd.spawn().map_err(|e| DownloadError::Failed(format!("Failed to spawn FFmpeg: {}", e)))?;
-        let stderr = child.stderr.take().ok_or_else(|| DownloadError::Failed("Failed to open FFmpeg stderr".to_string()))?;
-        let mut reader = tokio::io::BufReader::new(stderr).lines();
-
-        let start_time = std::time::Instant::now();
-        let mut last_emit = std::time::Instant::now();
-        let mut resolved_duration_secs = duration_secs;
-        let mut last_progress = 0.0;
-        let mut last_bytes = 0u64;
-
-        loop {
-            tokio::select! {
-                line_res = reader.next_line() => {
-                    match line_res {
-                        Ok(Some(line)) => {
-                            // Try to parse "Duration: hh:mm:ss" if we don't have a duration yet
-                            if resolved_duration_secs.is_none() || resolved_duration_secs == Some(0) {
-                                if let Some(pos) = line.find("Duration: ") {
-                                    let dur_part = &line[pos + 10..];
-                                    let val_str = dur_part.split(',').next().unwrap_or("").trim();
-                                    let parts: Vec<&str> = val_str.split(':').collect();
-                                    if parts.len() == 3 {
-                                        if let (Ok(h), Ok(m), Ok(s)) = (
-                                            parts[0].parse::<f64>(),
-                                            parts[1].parse::<f64>(),
-                                            parts[2].parse::<f64>(),
-                                        ) {
-                                            let total_secs = h * 3600.0 + m * 60.0 + s;
-                                            if total_secs > 0.0 {
-                                                resolved_duration_secs = Some(total_secs as u64);
-                                                debug!("[Downloader] Parsed duration from FFmpeg: {}s", total_secs);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if last_emit.elapsed() >= std::time::Duration::from_millis(500) {
-                                let (secs, size_bytes) = parse_ffmpeg_line(&line);
-                                
-                                let progress = if let (Some(s), Some(dur)) = (secs, resolved_duration_secs) {
-                                    if dur > 0 {
-                                        ((s / dur as f64) * 100.0).min(100.0).max(0.0)
-                                    } else {
-                                        0.0
-                                    }
-                                } else {
-                                    0.0
-                                };
-
-                                let speed_bytes = if start_time.elapsed().as_secs_f64() > 0.0 {
-                                    (size_bytes.unwrap_or(0) as f64 / start_time.elapsed().as_secs_f64()) as u64
-                                } else {
-                                    0
-                                };
-
-                                 let display_progress = if save_path.ends_with(".temp.ts") {
-                                    progress * 0.98
-                                } else {
-                                    progress
-                                };
-                                last_progress = progress;
-                                last_bytes = size_bytes.unwrap_or(0);
-
-                                let event = DownloadProgressEvent {
-                                    id: id.clone(),
-                                    title: title.clone(),
-                                    status: "downloading".to_string(),
-                                    progress: display_progress,
-                                    bytes_written: size_bytes.unwrap_or(0),
-                                    total_bytes: None,
-                                    speed_bytes,
-                                    file_path: save_path.clone(),
-                                    error: None,
-                                    status_text: None,
-                                };
-                                let _ = app_handle.emit("download:event", event);
-                                last_emit = std::time::Instant::now();
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(_) => break,
-                    }
-                }
-                _ = cancel_rx.changed() => {
-                    let ctrl = { *cancel_rx.borrow() };
-                    if let Some(c) = ctrl {
-                        let _ = child.kill().await;
-                        match c {
-                            DownloadControl::Cancel => {
-                                return Err(DownloadError::Canceled {
-                                    bytes_written: last_bytes,
-                                    total_bytes: None,
-                                    progress: last_progress,
-                                });
-                            }
-                            DownloadControl::Pause => {
-                                return Err(DownloadError::Paused {
-                                    bytes_written: last_bytes,
-                                    total_bytes: None,
-                                    progress: last_progress,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let status = child.wait().await.map_err(|e| DownloadError::Failed(format!("FFmpeg wait error: {}", e)))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(DownloadError::Failed("FFmpeg process failed".to_string()))
-        }
+        return ffmpeg_download(app_handle, id, title, url, save_path, user_agent, duration_secs, cancel_rx).await;
     } else {
-        let ua = user_agent.unwrap_or_else(|| "VLC/3.0.18 LibVLC/3.0.18".to_string());
+        let ua = user_agent.clone().unwrap_or_else(|| "VLC/3.0.18 LibVLC/3.0.18".to_string());
         let mut client_builder = reqwest::Client::builder()
             .user_agent(ua)
             .connect_timeout(std::time::Duration::from_secs(20));
@@ -4817,11 +4838,18 @@ async fn do_download(
                 .join(" ");
             let snippet: String = text.chars().take(200).collect();
             warn!("[Downloader] '{}' got non-video response from {} ({}): {}", title, final_url, content_type, snippet);
-            return Err(DownloadError::Failed(format!(
+            let page_msg = format!(
                 "Server returned '{}' instead of a video: {}",
                 content_type,
                 if snippet.is_empty() { "(empty page)" } else { snippet.as_str() }
-            )));
+            );
+            // The player (libavformat) may still be served video where reqwest gets a page, so try FFmpeg.
+            info!("[Downloader] '{}' retrying with FFmpeg after non-video response", title);
+            return match ffmpeg_download(app_handle, id, title, url, save_path, user_agent, duration_secs, cancel_rx).await {
+                Ok(()) => Ok(()),
+                Err(DownloadError::Failed(e)) => Err(DownloadError::Failed(format!("{} (FFmpeg fallback also failed: {})", page_msg, e))),
+                Err(other) => Err(other),
+            };
         }
 
         let is_partial = res.status() == reqwest::StatusCode::PARTIAL_CONTENT;
